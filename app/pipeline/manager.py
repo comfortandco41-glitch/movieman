@@ -294,10 +294,19 @@ class PipelineManager:
                             logger.warning(
                                 "Telethon not authorized, falling back to Mega resolver pipeline"
                             )
+                            if not ctx.download_url and not ctx.mega_url and not ctx.candidate_urls:
+                                raise PipelineError(
+                                    "Telegram Transfer",
+                                    "Telethon session is not authorized on Render. Please add the TELETHON_SESSION string in Render Environment Variables."
+                                )
+                    except PipelineError:
+                        raise
                     except Exception as tg_err:
                         logger.warning(
                             f"job={ctx.job_id} telegram_transfer failed: {tg_err}. Falling back to standard pipeline."
                         )
+                        if not ctx.download_url and not ctx.mega_url and not ctx.candidate_urls:
+                            raise PipelineError("Telegram Transfer", f"Telegram transfer failed: {tg_err}")
 
                 # Step 3: Fallback standard pipeline (Resolve -> Download -> Upload)
                 stages = []
