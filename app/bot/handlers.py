@@ -827,7 +827,7 @@ async def _execute_telegram_clone(update: Update, context: ContextTypes.DEFAULT_
                 description=review,
                 poster_url=poster_url,
                 job_id=clone_id,
-                source="Telegram Clone",
+                source="",
             )
             if sent_msgs:
                 sent_video_id = sent_msgs[-1].id
@@ -848,6 +848,30 @@ async def _execute_telegram_clone(update: Update, context: ContextTypes.DEFAULT_
     else:
         telegram_video_url = telegram_url or ""
 
+    # Detect quality and year from title & file_name
+    search_text = f"{title} {data.get('file_name', '')}".lower()
+    if "2160p" in search_text or "4k" in search_text:
+        quality = "4K UHD"
+    elif "1080p" in search_text:
+        quality = "1080p"
+    elif "720p" in search_text:
+        quality = "720p"
+    elif "480p" in search_text:
+        quality = "480p"
+    elif "web-dl" in search_text or "webdl" in search_text:
+        quality = "WEB-DL"
+    elif "bluray" in search_text or "bdrip" in search_text:
+        quality = "BluRay"
+    elif "hdrip" in search_text or "hdtv" in search_text:
+        quality = "HD"
+    else:
+        quality = "HD"
+
+    year = ""
+    y_match = re.search(r"\(?(\b(19\d\d|20\d\d)\b)\)?", title)
+    if y_match:
+        year = y_match.group(1)
+
     # 5. Persist completed job
     from app.store.database import save_completed_job, add_movie
     await save_completed_job(
@@ -855,11 +879,11 @@ async def _execute_telegram_clone(update: Update, context: ContextTypes.DEFAULT_
         title=title,
         poster_url=poster_url,
         description=review,
-        year="",
-        quality="Telegram Cloned",
+        year=year,
+        quality=quality,
         category="",
         duration="",
-        source="Telegram Clone",
+        source="",
         movie_page_url="",
     )
 
@@ -871,11 +895,11 @@ async def _execute_telegram_clone(update: Update, context: ContextTypes.DEFAULT_
                 title=title,
                 poster_url=poster_url,
                 description=review,
-                year="",
-                quality="Telegram Cloned",
+                year=year,
+                quality=quality,
                 category="",
                 duration="",
-                source="Telegram Clone",
+                source="",
                 telegram_video_url=telegram_video_url,
             )
             published = True

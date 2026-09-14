@@ -121,11 +121,22 @@
 
     function formatQuality(rawQuality, fullTitle) {
         if (rawQuality) {
-            const short = rawQuality.split(/[-–—]/)[0].trim();
-            if (short) return short;
+            const low = rawQuality.toLowerCase();
+            if (!low.includes("telegram") && !low.includes("clone")) {
+                const short = rawQuality.split(/[-–—]/)[0].trim();
+                if (short) return short;
+            }
         }
-        if (fullTitle && fullTitle.includes("1080p")) return "1080p";
-        if (fullTitle && fullTitle.includes("720p")) return "720p";
+        if (fullTitle) {
+            const t = fullTitle.toLowerCase();
+            if (t.includes("2160p") || t.includes("4k")) return "4K UHD";
+            if (t.includes("1080p")) return "1080p";
+            if (t.includes("720p")) return "720p";
+            if (t.includes("480p")) return "480p";
+            if (t.includes("web-dl") || t.includes("webdl")) return "WEB-DL";
+            if (t.includes("bluray") || t.includes("bdrip")) return "BluRay";
+            if (t.includes("hdrip") || t.includes("hdtv")) return "HD";
+        }
         return "HD";
     }
 
@@ -284,15 +295,17 @@
         }
         if (movie.duration) metaHtml += `<span class="meta-chip">⏱️ ${escapeHtml(movie.duration)}</span>`;
         if (movie.source) {
-            let sLabel = movie.source;
-            let sUrl = "";
             const sl = movie.source.toLowerCase();
-            if (sl.includes("homie")) { sLabel = "HomieTV"; sUrl = "https://www.homietv.com"; }
-            else if (sl.includes("mmsub")) { sLabel = "MMSubChannel"; sUrl = "https://mmsubchannel.com"; }
-            if (sUrl) {
-                metaHtml += `<a href="${sUrl}" target="_blank" rel="noopener" class="meta-chip source-credit" title="Original Creator & Source Credit">🌐 Credit: ${escapeHtml(sLabel)} ↗</a>`;
-            } else {
-                metaHtml += `<span class="meta-chip source-credit">🌐 Credit: ${escapeHtml(sLabel)}</span>`;
+            if (!sl.includes("clone") && !sl.includes("telegram")) {
+                let sLabel = movie.source;
+                let sUrl = "";
+                if (sl.includes("homie")) { sLabel = "HomieTV"; sUrl = "https://www.homietv.com"; }
+                else if (sl.includes("mmsub")) { sLabel = "MMSubChannel"; sUrl = "https://mmsubchannel.com"; }
+                if (sUrl) {
+                    metaHtml += `<a href="${sUrl}" target="_blank" rel="noopener" class="meta-chip source-credit" title="Original Creator & Source Credit">🌐 Credit: ${escapeHtml(sLabel)} ↗</a>`;
+                } else {
+                    metaHtml += `<span class="meta-chip source-credit">🌐 Credit: ${escapeHtml(sLabel)}</span>`;
+                }
             }
         }
         $heroMeta.innerHTML = metaHtml;
@@ -353,19 +366,21 @@
 
         let metaHtml = "";
         if (movie.year) metaHtml += `<span class="meta-chip">📅 ${escapeHtml(movie.year)}</span>`;
-        if (movie.quality) metaHtml += `<span class="meta-chip quality">📊 ${escapeHtml(movie.quality)}</span>`;
+        if (movie.quality) metaHtml += `<span class="meta-chip quality">📊 ${escapeHtml(q)}</span>`;
         if (movie.duration) metaHtml += `<span class="meta-chip">⏱️ ${escapeHtml(movie.duration)}</span>`;
         if (movie.category) metaHtml += `<span class="meta-chip">🏷️ ${escapeHtml(movie.category)}</span>`;
         if (movie.source) {
-            let sLabel = movie.source;
-            let sUrl = "";
             const sl = movie.source.toLowerCase();
-            if (sl.includes("homie")) { sLabel = "HomieTV"; sUrl = "https://www.homietv.com"; }
-            else if (sl.includes("mmsub")) { sLabel = "MMSubChannel"; sUrl = "https://mmsubchannel.com"; }
-            if (sUrl) {
-                metaHtml += `<a href="${sUrl}" target="_blank" rel="noopener" class="meta-chip source-credit" title="Original Creator & Source Credit">🌐 Credit: ${escapeHtml(sLabel)} ↗</a>`;
-            } else {
-                metaHtml += `<span class="meta-chip source-credit">🌐 Credit: ${escapeHtml(sLabel)}</span>`;
+            if (!sl.includes("clone") && !sl.includes("telegram")) {
+                let sLabel = movie.source;
+                let sUrl = "";
+                if (sl.includes("homie")) { sLabel = "HomieTV"; sUrl = "https://www.homietv.com"; }
+                else if (sl.includes("mmsub")) { sLabel = "MMSubChannel"; sUrl = "https://mmsubchannel.com"; }
+                if (sUrl) {
+                    metaHtml += `<a href="${sUrl}" target="_blank" rel="noopener" class="meta-chip source-credit" title="Original Creator & Source Credit">🌐 Credit: ${escapeHtml(sLabel)} ↗</a>`;
+                } else {
+                    metaHtml += `<span class="meta-chip source-credit">🌐 Credit: ${escapeHtml(sLabel)}</span>`;
+                }
             }
         }
         $modalMeta.innerHTML = metaHtml;

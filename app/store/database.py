@@ -223,6 +223,30 @@ async def init_db(
         logger.info(f"Using local SQLite database at: {_DB_PATH}")
 
     await _backend.init_tables()
+
+    # Clean up any legacy "Telegram Cloned" or clone labels
+    try:
+        await _backend.execute(
+            "UPDATE movies SET quality = '1080p' WHERE (quality LIKE '%clone%' OR quality LIKE '%telegram%') AND title LIKE '%1080p%'"
+        )
+        await _backend.execute(
+            "UPDATE movies SET quality = '720p' WHERE (quality LIKE '%clone%' OR quality LIKE '%telegram%') AND title LIKE '%720p%'"
+        )
+        await _backend.execute(
+            "UPDATE movies SET quality = 'HD' WHERE quality LIKE '%clone%' OR quality LIKE '%telegram%'"
+        )
+        await _backend.execute(
+            "UPDATE movies SET source = '' WHERE source LIKE '%clone%'"
+        )
+        await _backend.execute(
+            "UPDATE completed_jobs SET quality = 'HD' WHERE quality LIKE '%clone%' OR quality LIKE '%telegram%'"
+        )
+        await _backend.execute(
+            "UPDATE completed_jobs SET source = '' WHERE source LIKE '%clone%'"
+        )
+    except Exception as e:
+        logger.debug(f"Data cleanup notice: {e}")
+
     return _backend
 
 
