@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional, Union
 from urllib.parse import parse_qs, urlparse
 
 from telethon import TelegramClient, functions, types
+from telethon.sessions import StringSession
 from telethon.tl.types import (
     DocumentAttributeVideo,
     DocumentAttributeFilename,
@@ -169,8 +170,18 @@ class TelethonUploader:
         """Get or initialize the Telethon client."""
         async with self._lock:
             if self._client is None:
+                session_val = self.session_name
+                # Check if session_name is a StringSession string (e.g. deployed on cloud)
+                if isinstance(session_val, str) and (
+                    (len(session_val) > 60 and not session_val.endswith(".session"))
+                    or (len(session_val) > 60 and not Path(session_val).exists())
+                ):
+                    session_arg = StringSession(session_val.strip())
+                else:
+                    session_arg = session_val
+
                 self._client = TelegramClient(
-                    self.session_name,
+                    session_arg,
                     self.api_id,
                     self.api_hash,
                 )
