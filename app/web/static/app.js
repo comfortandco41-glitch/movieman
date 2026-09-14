@@ -49,7 +49,7 @@
     const $header = document.getElementById("header");
 
     // ── API ───────────────────────────────────────────────────────
-    const DEFAULT_REMOTE_API = "https://movieman-store-api.loca.lt";
+    const DEFAULT_REMOTE_API = "https://movieman-ohdg.onrender.com";
     const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
     
     // Support URL parameter override: ?api=https://your-service.onrender.com
@@ -62,7 +62,8 @@
     } catch (e) {}
 
     let stored = localStorage.getItem("API_BASE_URL");
-    if (stored && stored.includes("good-guests-film")) {
+    // Clear old temporary tunnel URLs so they automatically upgrade to Render
+    if (stored && (stored.includes("loca.lt") || stored.includes("good-guests-film"))) {
         stored = DEFAULT_REMOTE_API;
         localStorage.setItem("API_BASE_URL", stored);
     }
