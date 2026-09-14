@@ -49,10 +49,15 @@
     const $header = document.getElementById("header");
 
     // ── API ───────────────────────────────────────────────────────
-    const DEFAULT_REMOTE_API = "https://good-guests-film.loca.lt";
+    const DEFAULT_REMOTE_API = "https://movieman-store-api.loca.lt";
     const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    let stored = localStorage.getItem("API_BASE_URL");
+    if (stored && stored.includes("good-guests-film")) {
+        stored = DEFAULT_REMOTE_API;
+        localStorage.setItem("API_BASE_URL", stored);
+    }
     const API_BASE = (
-        localStorage.getItem("API_BASE_URL") ||
+        stored ||
         (isLocalhost ? "" : DEFAULT_REMOTE_API)
     ).replace(/\/+$/, "");
 
