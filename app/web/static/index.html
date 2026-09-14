@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movie Man — Premium Movie Store</title>
+    <meta name="description" content="Browse and watch the latest movies with Burmese subtitles. Powered by Movie Man Bot.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- ── Header ──────────────────────────────────────────────── -->
+    <header class="header" id="header">
+        <div class="header-inner">
+            <a href="/" class="logo">
+                <span class="logo-icon">🎬</span>
+                <span class="logo-text">Movie<span class="logo-accent">Man</span></span>
+            </a>
+            <div class="search-bar" id="search-bar">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <path d="m21 21-4.3-4.3"></path>
+                </svg>
+                <input type="text" id="search-input" placeholder="Search movies..." autocomplete="off">
+                <button class="search-clear" id="search-clear" aria-label="Clear search">&times;</button>
+            </div>
+            <nav class="header-nav">
+                <a href="#" class="nav-link active" data-filter="all">All</a>
+                <a href="#" class="nav-link" data-filter="latest">Latest</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- ── Hero Section ────────────────────────────────────────── -->
+    <section class="hero" id="hero">
+        <div class="hero-bg" id="hero-bg"></div>
+        <div class="hero-overlay"></div>
+        <div class="hero-content" id="hero-content">
+            <div class="hero-badge">🔥 Featured</div>
+            <h1 class="hero-title" id="hero-title">Welcome to MovieMan</h1>
+            <p class="hero-desc" id="hero-desc">Browse and watch the latest movies with Burmese subtitles</p>
+            <div class="hero-meta" id="hero-meta"></div>
+            <button class="hero-btn" id="hero-btn" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                Watch Now
+            </button>
+        </div>
+    </section>
+
+    <!-- ── Category Chips ──────────────────────────────────────── -->
+    <section class="categories-section" id="categories-section">
+        <div class="categories-scroll" id="categories-scroll">
+            <button class="chip active" data-category="">All Genres</button>
+        </div>
+    </section>
+
+    <!-- ── Movie Grid ──────────────────────────────────────────── -->
+    <main class="main-content">
+        <div class="section-header">
+            <h2 class="section-title" id="section-title">🎬 All Movies</h2>
+            <span class="movie-count" id="movie-count"></span>
+        </div>
+
+        <div class="movie-grid" id="movie-grid">
+            <!-- Movie cards rendered by JS -->
+        </div>
+
+        <div class="loading-spinner" id="loading-spinner" style="display:none;">
+            <div class="spinner"></div>
+            <p>Loading movies...</p>
+        </div>
+
+        <div class="empty-state" id="empty-state" style="display:none;">
+            <div class="empty-icon">🎬</div>
+            <h3>No movies found</h3>
+            <p>Try a different search or check back later.</p>
+        </div>
+
+        <!-- ── Pagination ──────────────────────────────────────── -->
+        <div class="pagination" id="pagination"></div>
+    </main>
+
+    <!-- ── Movie Detail Modal ──────────────────────────────────── -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal" id="modal">
+            <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+            <div class="modal-poster-wrap">
+                <img class="modal-poster" id="modal-poster" alt="" loading="lazy">
+                <div class="modal-quality-badge" id="modal-quality"></div>
+            </div>
+            <div class="modal-body">
+                <h2 class="modal-title" id="modal-title"></h2>
+                <div class="modal-meta" id="modal-meta"></div>
+                <div class="modal-desc" id="modal-desc"></div>
+                <a class="modal-watch-btn" id="modal-watch-btn" href="#" target="_blank" rel="noopener">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                    </svg>
+                    Watch on Telegram
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Footer ──────────────────────────────────────────────── -->
+    <footer class="footer">
+        <p>Powered by <strong>Movie Man Bot</strong> &mdash; Built with ❤️</p>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
