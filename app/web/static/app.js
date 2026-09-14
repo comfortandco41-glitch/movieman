@@ -49,6 +49,7 @@
     const $header = document.getElementById("header");
 
     // ── API ───────────────────────────────────────────────────────
+    const API_BASE = (window.API_BASE_URL || localStorage.getItem("API_BASE_URL") || "").replace(/\/+$/, "");
 
     async function fetchMovies(page = 1, search = "", category = "") {
         const params = new URLSearchParams({
@@ -58,19 +59,19 @@
         if (search) params.set("search", search);
         if (category) params.set("category", category);
 
-        const response = await fetch(`/api/movies?${params}`);
+        const response = await fetch(`${API_BASE}/api/movies?${params}`);
         if (!response.ok) throw new Error("Failed to fetch movies");
         return response.json();
     }
 
     async function fetchCategories() {
-        const response = await fetch("/api/categories");
+        const response = await fetch(`${API_BASE}/api/categories`);
         if (!response.ok) return { categories: [] };
         return response.json();
     }
 
     async function fetchMovie(id) {
-        const response = await fetch(`/api/movies/${id}`);
+        const response = await fetch(`${API_BASE}/api/movies/${id}`);
         if (!response.ok) throw new Error("Movie not found");
         return response.json();
     }
@@ -393,6 +394,27 @@
             hideLoading();
             console.error("Failed to load movies:", err);
             $empty.style.display = "block";
+            const emptyHeading = $empty.querySelector("h3");
+            const emptyText = $empty.querySelector("p");
+            if (emptyHeading) emptyHeading.textContent = "Backend Not Connected";
+            if (emptyText) {
+                emptyText.innerHTML = `
+                    The frontend is live, but it cannot reach your bot backend yet.<br><br>
+                    <button id="set-api-btn" style="padding:10px 20px;background:#6366f1;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:600;font-size:14px;box-shadow:0 4px 14px rgba(99,102,241,0.4);">
+                        🔗 Connect Backend URL
+                    </button>
+                `;
+                const btn = document.getElementById("set-api-btn");
+                if (btn) {
+                    btn.onclick = () => {
+                        const url = prompt("Enter your public backend URL (e.g. from Cloudflare Tunnel or Render):", API_BASE);
+                        if (url !== null) {
+                            localStorage.setItem("API_BASE_URL", url.trim());
+                            window.location.reload();
+                        }
+                    };
+                }
+            }
         }
     }
 

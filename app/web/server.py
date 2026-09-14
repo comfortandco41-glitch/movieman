@@ -24,6 +24,16 @@ STATIC_DIR = Path(__file__).parent / "static"
 # FastAPI app
 app = FastAPI(title="Movie Man Store", docs_url=None, redoc_url=None)
 
+# Allow CORS for all origins (so Vercel frontend can talk to this backend)
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ── API Routes ─────────────────────────────────────────────────────────────
 
