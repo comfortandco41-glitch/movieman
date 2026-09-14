@@ -953,6 +953,38 @@ body {
     margin-top: 4px;
 }
 
+.footer-credits {
+    font-size: 13px;
+    color: var(--text-tertiary);
+    margin-top: 8px;
+    line-height: 1.6;
+}
+
+.footer-credits a {
+    color: #60a5fa;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.footer-credits a:hover {
+    text-decoration: underline;
+}
+
+.meta-chip.source-credit {
+    color: #60a5fa;
+    border-color: rgba(96, 165, 250, 0.35);
+    background: rgba(96, 165, 250, 0.08);
+    text-decoration: none;
+    transition: all var(--duration-fast) ease;
+}
+
+.meta-chip.source-credit:hover {
+    color: #93c5fd;
+    border-color: #60a5fa;
+    background: rgba(96, 165, 250, 0.18);
+    transform: translateY(-1px);
+}
+
 /* ── Mobile Layout Specifics ──────────────────────────────────── */
 
 @media (max-width: 640px) {

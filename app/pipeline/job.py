@@ -51,6 +51,7 @@ class JobContext:
     category: str = ""             # Genres / categories
     duration: str = ""             # Duration / runtime
     quality: str = ""              # Quality label
+    source: str = ""               # Source website (e.g. 'homietv', 'mmsubchannel')
 
     # Job directory
     job_dir: Optional[Path] = None

@@ -283,6 +283,18 @@
             });
         }
         if (movie.duration) metaHtml += `<span class="meta-chip">⏱️ ${escapeHtml(movie.duration)}</span>`;
+        if (movie.source) {
+            let sLabel = movie.source;
+            let sUrl = "";
+            const sl = movie.source.toLowerCase();
+            if (sl.includes("homie")) { sLabel = "HomieTV"; sUrl = "https://www.homietv.com"; }
+            else if (sl.includes("mmsub")) { sLabel = "MMSubChannel"; sUrl = "https://mmsubchannel.com"; }
+            if (sUrl) {
+                metaHtml += `<a href="${sUrl}" target="_blank" rel="noopener" class="meta-chip source-credit" title="Original Creator & Source Credit">🌐 Credit: ${escapeHtml(sLabel)} ↗</a>`;
+            } else {
+                metaHtml += `<span class="meta-chip source-credit">🌐 Credit: ${escapeHtml(sLabel)}</span>`;
+            }
+        }
         $heroMeta.innerHTML = metaHtml;
 
         if (movie.telegram_video_url) {
@@ -344,7 +356,18 @@
         if (movie.quality) metaHtml += `<span class="meta-chip quality">📊 ${escapeHtml(movie.quality)}</span>`;
         if (movie.duration) metaHtml += `<span class="meta-chip">⏱️ ${escapeHtml(movie.duration)}</span>`;
         if (movie.category) metaHtml += `<span class="meta-chip">🏷️ ${escapeHtml(movie.category)}</span>`;
-        if (movie.source) metaHtml += `<span class="meta-chip">📡 ${escapeHtml(movie.source)}</span>`;
+        if (movie.source) {
+            let sLabel = movie.source;
+            let sUrl = "";
+            const sl = movie.source.toLowerCase();
+            if (sl.includes("homie")) { sLabel = "HomieTV"; sUrl = "https://www.homietv.com"; }
+            else if (sl.includes("mmsub")) { sLabel = "MMSubChannel"; sUrl = "https://mmsubchannel.com"; }
+            if (sUrl) {
+                metaHtml += `<a href="${sUrl}" target="_blank" rel="noopener" class="meta-chip source-credit" title="Original Creator & Source Credit">🌐 Credit: ${escapeHtml(sLabel)} ↗</a>`;
+            } else {
+                metaHtml += `<span class="meta-chip source-credit">🌐 Credit: ${escapeHtml(sLabel)}</span>`;
+            }
+        }
         $modalMeta.innerHTML = metaHtml;
 
         $modalDesc.textContent = (movie.description || "No review available for this movie.").trim();

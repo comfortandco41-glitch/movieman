@@ -371,6 +371,14 @@ async def stage_upload(
                     meta_lines.append(f"🏷️ <b>Genre:</b> {html.escape(ctx.category)}")
                 if ctx.quality:
                     meta_lines.append(f"📊 <b>Quality:</b> {html.escape(ctx.quality)}")
+                if ctx.source:
+                    s_lower = ctx.source.lower()
+                    if "homie" in s_lower:
+                        meta_lines.append('🌐 <b>Credit:</b> <a href="https://www.homietv.com">HomieTV</a>')
+                    elif "mmsub" in s_lower:
+                        meta_lines.append('🌐 <b>Credit:</b> <a href="https://mmsubchannel.com">MMSubChannel</a>')
+                    else:
+                        meta_lines.append(f"🌐 <b>Credit:</b> {html.escape(ctx.source)}")
                 meta_block = ("\n" + "\n".join(meta_lines) + "\n") if meta_lines else ""
                 review_text = (
                     f"🎬 <b>{html.escape(ctx.title or 'Movie')}</b>\n"
@@ -524,6 +532,7 @@ async def stage_telegram_transfer(
         category=ctx.category,
         duration=ctx.duration,
         quality=ctx.quality,
+        source=getattr(ctx, "source", ""),
     )
 
     count = len(sent_items) if isinstance(sent_items, list) else 1

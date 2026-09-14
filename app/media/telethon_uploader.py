@@ -318,6 +318,7 @@ class TelethonUploader:
         category: str = "",
         duration: str = "",
         quality: str = "",
+        source: str = "",
     ) -> bool:
         """Send poster and review text to destination channel."""
         poster_caption = f"🎬 <b>{html.escape(title or 'Movie')}</b>"
@@ -368,6 +369,14 @@ class TelethonUploader:
                     meta_lines.append(f"🏷️ <b>Genre:</b> {html.escape(category)}")
                 if quality:
                     meta_lines.append(f"📊 <b>Quality:</b> {html.escape(quality)}")
+                if source:
+                    s_lower = source.lower()
+                    if "homie" in s_lower:
+                        meta_lines.append('🌐 <b>Credit:</b> <a href="https://www.homietv.com">HomieTV</a>')
+                    elif "mmsub" in s_lower:
+                        meta_lines.append('🌐 <b>Credit:</b> <a href="https://mmsubchannel.com">MMSubChannel</a>')
+                    else:
+                        meta_lines.append(f"🌐 <b>Credit:</b> {html.escape(source)}")
 
                 meta_block = ("\n" + "\n".join(meta_lines) + "\n") if meta_lines else ""
                 header = f"{title} ({year})" if year and year not in (title or "") else (title or "Movie")
@@ -410,6 +419,7 @@ class TelethonUploader:
         category: str = "",
         duration: str = "",
         quality: str = "",
+        source: str = "",
     ) -> list[Message]:
         """Clone video media directly from a Telegram public channel to target channel.
 
@@ -582,6 +592,7 @@ class TelethonUploader:
             category=category,
             duration=duration,
             quality=quality,
+            source=source,
         )
 
         sent_messages: list[Message] = []
@@ -657,6 +668,7 @@ class TelethonUploader:
         category: str = "",
         duration: str = "",
         quality: str = "",
+        source: str = "",
     ) -> list[Message]:
         """Request a movie or series from the Telegram delivery bot and transfer all episodes/files to the channel.
 
@@ -684,6 +696,7 @@ class TelethonUploader:
                 category=category,
                 duration=duration,
                 quality=quality,
+                source=source,
             )
 
         if not clean_url.startswith(("http://", "https://", "tg://")):
@@ -920,6 +933,7 @@ class TelethonUploader:
             category=category,
             duration=duration,
             quality=quality,
+            source=source,
         )
 
         logger.info(
