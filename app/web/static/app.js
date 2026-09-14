@@ -51,6 +51,16 @@
     // ── API ───────────────────────────────────────────────────────
     const DEFAULT_REMOTE_API = "https://movieman-store-api.loca.lt";
     const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    
+    // Support URL parameter override: ?api=https://your-service.onrender.com
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const apiParam = urlParams.get("api");
+        if (apiParam) {
+            localStorage.setItem("API_BASE_URL", apiParam.trim().replace(/\/+$/, ""));
+        }
+    } catch (e) {}
+
     let stored = localStorage.getItem("API_BASE_URL");
     if (stored && stored.includes("good-guests-film")) {
         stored = DEFAULT_REMOTE_API;
@@ -60,6 +70,28 @@
         stored ||
         (isLocalhost ? "" : DEFAULT_REMOTE_API)
     ).replace(/\/+$/, "");
+
+    // Connect API Settings Button in Header
+    const $apiBtn = document.getElementById("api-settings-btn");
+    if ($apiBtn) {
+        $apiBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            const current = localStorage.getItem("API_BASE_URL") || API_BASE;
+            const input = prompt(
+                "Enter your Render backend URL (e.g., https://movieman.onrender.com):",
+                current
+            );
+            if (input !== null) {
+                const cleaned = input.trim().replace(/\/+$/, "");
+                if (cleaned) {
+                    localStorage.setItem("API_BASE_URL", cleaned);
+                } else {
+                    localStorage.removeItem("API_BASE_URL");
+                }
+                window.location.reload();
+            }
+        });
+    }
 
     const API_HEADERS = { "bypass-tunnel-reminder": "1" };
 
