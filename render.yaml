@@ -3,7 +3,7 @@ services:
     name: movieman
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
+    buildCommand: pip install -r requirements.txt && playwright install chromium
     startCommand: python -m app.main
     healthCheckPath: /health
     autoDeploy: true
