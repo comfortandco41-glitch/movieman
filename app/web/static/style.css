@@ -221,15 +221,6 @@ body {
     font-weight: 600;
 }
 
-.nav-link.api-btn {
-    color: var(--text-tertiary);
-    border-color: var(--border-subtle);
-}
-.nav-link.api-btn:hover {
-    color: var(--text-primary);
-    border-color: var(--border-hover);
-}
-
 /* ── Hero Banner ─────────────────────────────────────────── */
 
 .hero {

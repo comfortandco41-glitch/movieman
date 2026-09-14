@@ -76,28 +76,6 @@
         (isLocalhost ? "" : DEFAULT_REMOTE_API)
     ).replace(/\/+$/, "");
 
-    // Connect API Settings Button in Header
-    const $apiBtn = document.getElementById("api-settings-btn");
-    if ($apiBtn) {
-        $apiBtn.addEventListener("click", (e) => {
-            e.preventDefault();
-            const current = localStorage.getItem("API_BASE_URL") || API_BASE;
-            const input = prompt(
-                "Enter your Render backend URL (e.g., https://movieman-ohdg.onrender.com):",
-                current
-            );
-            if (input !== null) {
-                const cleaned = input.trim().replace(/\/+$/, "");
-                if (cleaned) {
-                    localStorage.setItem("API_BASE_URL", cleaned);
-                } else {
-                    localStorage.removeItem("API_BASE_URL");
-                }
-                window.location.reload();
-            }
-        });
-    }
-
     const API_HEADERS = { "bypass-tunnel-reminder": "1" };
 
     // ── API Client ────────────────────────────────────────────────
