@@ -117,10 +117,14 @@ async def test_handle_photo_message_advances_to_review(dummy_update, dummy_conte
     dummy_update.message.caption = None
 
     mock_file = MagicMock()
-    mock_file.download_to_drive = AsyncMock()
+    mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"image_content_xyz"))
     photo.get_file = AsyncMock(return_value=mock_file)
 
-    await handle_photo_message(dummy_update, dummy_context)
+    with patch("app.store.database.save_poster", new=AsyncMock()) as mock_save:
+        await handle_photo_message(dummy_update, dummy_context)
+        assert mock_save.called
+        assert mock_save.call_args[0][0] == "test1234"
+        assert mock_save.call_args[0][1] == b"image_content_xyz"
 
     assert dummy_context.user_data.get("tg_clone_state") == "AWAITING_REVIEW"
     call_args = dummy_update.message.reply_text.call_args[0][0]

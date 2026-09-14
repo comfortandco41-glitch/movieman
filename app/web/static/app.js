@@ -140,6 +140,15 @@
         return "HD";
     }
 
+    function resolvePosterUrl(url) {
+        if (!url) return "";
+        if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("data:")) {
+            return url;
+        }
+        const cleanUrl = url.startsWith("/") ? url : `/${url}`;
+        return API_BASE ? `${API_BASE}${cleanUrl}` : cleanUrl;
+    }
+
     // ── Rendering ─────────────────────────────────────────────────
 
     function renderMovieCard(movie) {
@@ -150,8 +159,9 @@
         const displayTitle = cleanTitle(movie.title);
         const qualityText = formatQuality(movie.quality, movie.title);
 
-        const posterHtml = movie.poster_url
-            ? `<img src="${escapeHtml(movie.poster_url)}" alt="${escapeHtml(displayTitle)}" loading="lazy">`
+        const posterSrc = resolvePosterUrl(movie.poster_url);
+        const posterHtml = posterSrc
+            ? `<img src="${escapeHtml(posterSrc)}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.parentElement.innerHTML='<div class=\\'poster-placeholder\\'>🎬</div>';">`
             : `<div class="poster-placeholder">🎬</div>`;
 
         const qualityBadge = qualityText
@@ -262,8 +272,9 @@
             return;
         }
 
-        if (movie.poster_url) {
-            $heroBg.style.backgroundImage = `url('${movie.poster_url}')`;
+        const heroPoster = resolvePosterUrl(movie.poster_url);
+        if (heroPoster) {
+            $heroBg.style.backgroundImage = `url('${heroPoster}')`;
         }
 
         const displayTitle = cleanTitle(movie.title);
@@ -355,9 +366,11 @@
 
     function openModal(movie) {
         const displayTitle = cleanTitle(movie.title);
-        $modalPoster.src = movie.poster_url || "";
+        const modalPosterSrc = resolvePosterUrl(movie.poster_url);
+        $modalPoster.src = modalPosterSrc || "";
         $modalPoster.alt = displayTitle;
-        $modalPoster.style.display = movie.poster_url ? "block" : "none";
+        $modalPoster.style.display = modalPosterSrc ? "block" : "none";
+        $modalPoster.onerror = () => { $modalPoster.style.display = "none"; };
         
         const q = formatQuality(movie.quality, movie.title);
         $modalQuality.textContent = q;

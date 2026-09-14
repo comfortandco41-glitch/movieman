@@ -664,15 +664,26 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     data = context.user_data.get("tg_clone_data", {})
     clone_id = data.get("clone_id", uuid.uuid4().hex[:8])
 
-    poster_dir = Path("app/web/static/posters")
+    from app.web.server import STATIC_DIR
+    poster_dir = STATIC_DIR / "posters"
     poster_dir.mkdir(parents=True, exist_ok=True)
     dest = poster_dir / f"{clone_id}.jpg"
+
+    photo_bytes: Optional[bytes] = None
+    mime_type = "image/jpeg"
 
     if msg.photo:
         try:
             photo_obj = msg.photo[-1]
             photo_file = await photo_obj.get_file()
-            await photo_file.download_to_drive(dest)
+            if hasattr(photo_file, "download_as_bytearray"):
+                byte_arr = await photo_file.download_as_bytearray()
+                photo_bytes = bytes(byte_arr)
+                dest.write_bytes(photo_bytes)
+            else:
+                await photo_file.download_to_drive(dest)
+                if dest.exists():
+                    photo_bytes = dest.read_bytes()
             data["poster_local_path"] = str(dest)
             data["poster_url"] = f"/static/posters/{clone_id}.jpg"
             data["poster_file_id"] = photo_obj.file_id
@@ -685,7 +696,15 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     ):
         try:
             doc_file = await msg.document.get_file()
-            await doc_file.download_to_drive(dest)
+            if hasattr(doc_file, "download_as_bytearray"):
+                byte_arr = await doc_file.download_as_bytearray()
+                photo_bytes = bytes(byte_arr)
+                dest.write_bytes(photo_bytes)
+            else:
+                await doc_file.download_to_drive(dest)
+                if dest.exists():
+                    photo_bytes = dest.read_bytes()
+            mime_type = msg.document.mime_type or "image/jpeg"
             data["poster_local_path"] = str(dest)
             data["poster_url"] = f"/static/posters/{clone_id}.jpg"
             data["poster_file_id"] = msg.document.file_id
@@ -694,6 +713,15 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             data["poster_file_id"] = msg.document.file_id
     else:
         return
+
+    # Persist poster binary into database so Render container restarts never lose it!
+    if photo_bytes:
+        try:
+            from app.store import database as db
+            await db.save_poster(clone_id, photo_bytes, mime_type=mime_type)
+            logger.info(f"Saved poster for {clone_id} to database ({len(photo_bytes)} bytes)")
+        except Exception as err:
+            logger.warning(f"Failed to persist poster to database: {err}")
 
     caption_hint = ""
     if msg.caption and not data.get("review_text"):
@@ -764,6 +792,28 @@ async def _execute_telegram_clone(update: Update, context: ContextTypes.DEFAULT_
                     )
             except Exception as e:
                 logger.warning(f"Could not send poster from local file to channel: {e}")
+        elif clone_id:
+            try:
+                from app.store import database as db
+                poster_rec = await db.get_poster(clone_id)
+                if poster_rec and poster_rec.get("data"):
+                    import io, base64
+                    p_bytes = base64.b64decode(poster_rec["data"])
+                    await context.bot.send_photo(
+                        chat_id=target_channel,
+                        photo=io.BytesIO(p_bytes),
+                        caption=f"🎬 <b>{html.escape(title)}</b>",
+                        parse_mode="HTML",
+                    )
+                elif poster_file_id:
+                    await context.bot.send_photo(
+                        chat_id=target_channel,
+                        photo=poster_file_id,
+                        caption=f"🎬 <b>{html.escape(title)}</b>",
+                        parse_mode="HTML",
+                    )
+            except Exception as e:
+                logger.warning(f"Could not send poster from database/file_id to channel: {e}")
         elif poster_file_id:
             try:
                 await context.bot.send_photo(

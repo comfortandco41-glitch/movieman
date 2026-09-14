@@ -203,3 +203,46 @@ def test_port_env_resolution(monkeypatch):
         telegram_bot_token="test:token",
     )
     assert cfg.web_port == 10000
+
+
+@pytest.mark.asyncio
+async def test_save_and_get_poster():
+    """Verify saving image bytes and retrieving poster data."""
+    raw_img = b"\xff\xd8\xff\xe0\x00\x10JFIFfakeimagecontent"
+    await db.save_poster("test_poster_1", raw_img, "image/jpeg")
+
+    poster = await db.get_poster("test_poster_1")
+    assert poster is not None
+    assert poster["id"] == "test_poster_1"
+    assert poster["mime_type"] == "image/jpeg"
+
+    import base64
+    decoded = base64.b64decode(poster["data"])
+    assert decoded == raw_img
+
+
+@pytest.mark.asyncio
+async def test_serve_poster_api_endpoints():
+    """Verify /static/posters/{name} and /api/posters/{id} serve from DB when file missing."""
+    raw_img = b"\xff\xd8\xff\xe0\x00\x10JFIFposter_api_test"
+    await db.save_poster("api_test_img", raw_img, "image/jpeg")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        # Test /static/posters/{id}.jpg
+        resp_static = await ac.get("/static/posters/api_test_img.jpg")
+        assert resp_static.status_code == 200
+        assert resp_static.content == raw_img
+        assert resp_static.headers.get("content-type") == "image/jpeg"
+
+        # Test /api/posters/{id}
+        resp_api = await ac.get("/api/posters/api_test_img")
+        assert resp_api.status_code == 200
+        assert resp_api.content == raw_img
+
+        # Test 404 for non-existent poster
+        resp_404 = await ac.get("/static/posters/non_existent.jpg")
+        assert resp_404.status_code == 404
+

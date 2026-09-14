@@ -7,6 +7,7 @@ Supports both:
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from pathlib import Path
@@ -85,6 +86,14 @@ class AioSqliteBackend(BaseBackend):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS posters (
+                id TEXT PRIMARY KEY,
+                mime_type TEXT DEFAULT 'image/jpeg',
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
     async def execute(self, sql: str, params: Optional[list | tuple] = None) -> Any:
@@ -159,6 +168,14 @@ class TursoBackend(BaseBackend):
                 duration TEXT DEFAULT '',
                 source TEXT DEFAULT '',
                 movie_page_url TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await client.execute("""
+            CREATE TABLE IF NOT EXISTS posters (
+                id TEXT PRIMARY KEY,
+                mime_type TEXT DEFAULT 'image/jpeg',
+                data TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -246,6 +263,20 @@ async def init_db(
         )
     except Exception as e:
         logger.debug(f"Data cleanup notice: {e}")
+
+    # Auto-seed static posters into database for cloud persistence
+    try:
+        from app.web.server import STATIC_DIR
+        posters_dir = STATIC_DIR / "posters"
+        if posters_dir.exists():
+            for p_file in posters_dir.glob("*.jpg"):
+                p_id = p_file.stem
+                existing = await get_poster(p_id)
+                if not existing:
+                    await save_poster(p_id, p_file.read_bytes(), "image/jpeg")
+                    logger.info(f"Seeded static poster into database: {p_file.name}")
+    except Exception as e:
+        logger.debug(f"Static poster seeding notice: {e}")
 
     return _backend
 
@@ -484,3 +515,50 @@ async def sync_local_to_cloud(local_db_path: Optional[Path] = None) -> int:
 
     logger.info(f"Synced {copied} movies from local SQLite to cloud database.")
     return copied
+
+
+async def save_poster(poster_id: str, data_bytes: bytes, mime_type: str = "image/jpeg") -> None:
+    """Save an image binary to the posters table as base64 string."""
+    backend = await get_db()
+    b64_data = base64.b64encode(data_bytes).decode("ascii")
+    await backend.execute(
+        """
+        INSERT INTO posters (id, mime_type, data)
+        VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            mime_type=excluded.mime_type,
+            data=excluded.data
+        """,
+        (poster_id, mime_type, b64_data),
+    )
+
+
+async def get_poster(poster_id: str) -> Optional[dict]:
+    """Retrieve poster image record by ID."""
+    backend = await get_db()
+    return await backend.fetchone(
+        "SELECT id, mime_type, data, created_at FROM posters WHERE id = ?",
+        (poster_id,),
+    )
+
+
+async def get_movie_by_job_id(job_id: str) -> Optional[dict]:
+    """Get a single movie by its job ID."""
+    backend = await get_db()
+    return await backend.fetchone("SELECT * FROM movies WHERE job_id = ?", (job_id,))
+
+
+async def update_movie_poster(movie_id_or_job_id: str | int, poster_url: str) -> None:
+    """Update poster_url for a movie by ID or job_id."""
+    backend = await get_db()
+    if isinstance(movie_id_or_job_id, int) or str(movie_id_or_job_id).isdigit():
+        await backend.execute(
+            "UPDATE movies SET poster_url = ? WHERE id = ?",
+            (poster_url, int(movie_id_or_job_id)),
+        )
+    else:
+        await backend.execute(
+            "UPDATE movies SET poster_url = ? WHERE job_id = ?",
+            (poster_url, str(movie_id_or_job_id)),
+        )
+

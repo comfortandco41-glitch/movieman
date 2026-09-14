@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.store import database as db
@@ -77,6 +77,45 @@ async def health_check():
 
 
 # ── Static Files & Frontend ───────────────────────────────────────────────
+
+@app.get("/static/posters/{poster_name}")
+async def serve_static_poster(poster_name: str):
+    """Serve a poster image from disk cache or fallback to persistent database."""
+    local_file = STATIC_DIR / "posters" / poster_name
+    if local_file.exists():
+        return FileResponse(
+            str(local_file),
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    poster_id = poster_name.rsplit(".", 1)[0]
+    poster = await db.get_poster(poster_id)
+    if poster and poster.get("data"):
+        try:
+            import base64
+            img_bytes = base64.b64decode(poster["data"])
+            # Cache locally to disk for fast subsequent reads
+            try:
+                local_file.parent.mkdir(parents=True, exist_ok=True)
+                local_file.write_bytes(img_bytes)
+            except Exception:
+                pass
+            return Response(
+                content=img_bytes,
+                media_type=poster.get("mime_type", "image/jpeg"),
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
+        except Exception as e:
+            logger.warning(f"Failed decoding poster {poster_id}: {e}")
+
+    return JSONResponse({"error": "Poster not found"}, status_code=404)
+
+
+@app.get("/api/posters/{poster_id}")
+async def serve_api_poster(poster_id: str):
+    """API endpoint to get poster by poster ID."""
+    return await serve_static_poster(f"{poster_id}.jpg")
+
 
 # Mount static files (CSS, JS, images)
 if STATIC_DIR.exists():
