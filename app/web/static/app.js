@@ -49,7 +49,14 @@
     const $header = document.getElementById("header");
 
     // ── API ───────────────────────────────────────────────────────
-    const API_BASE = (window.API_BASE_URL || localStorage.getItem("API_BASE_URL") || "").replace(/\/+$/, "");
+    const DEFAULT_REMOTE_API = "https://good-guests-film.loca.lt";
+    const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    const API_BASE = (
+        localStorage.getItem("API_BASE_URL") ||
+        (isLocalhost ? "" : DEFAULT_REMOTE_API)
+    ).replace(/\/+$/, "");
+
+    const API_HEADERS = { "bypass-tunnel-reminder": "1" };
 
     async function fetchMovies(page = 1, search = "", category = "") {
         const params = new URLSearchParams({
@@ -59,19 +66,25 @@
         if (search) params.set("search", search);
         if (category) params.set("category", category);
 
-        const response = await fetch(`${API_BASE}/api/movies?${params}`);
+        const response = await fetch(`${API_BASE}/api/movies?${params}`, {
+            headers: API_HEADERS,
+        });
         if (!response.ok) throw new Error("Failed to fetch movies");
         return response.json();
     }
 
     async function fetchCategories() {
-        const response = await fetch(`${API_BASE}/api/categories`);
+        const response = await fetch(`${API_BASE}/api/categories`, {
+            headers: API_HEADERS,
+        });
         if (!response.ok) return { categories: [] };
         return response.json();
     }
 
     async function fetchMovie(id) {
-        const response = await fetch(`${API_BASE}/api/movies/${id}`);
+        const response = await fetch(`${API_BASE}/api/movies/${id}`, {
+            headers: API_HEADERS,
+        });
         if (!response.ok) throw new Error("Movie not found");
         return response.json();
     }
