@@ -79,6 +79,18 @@ async def serve_frontend():
     )
 
 
+@app.get("/style.css")
+async def serve_css():
+    from fastapi.responses import FileResponse
+    return FileResponse(STATIC_DIR / "style.css", media_type="text/css")
+
+
+@app.get("/app.js")
+async def serve_js():
+    from fastapi.responses import FileResponse
+    return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
+
+
 async def start_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     """Start the FastAPI server in the background.
 
