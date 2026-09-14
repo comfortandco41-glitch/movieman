@@ -108,6 +108,45 @@ async def serve_static_poster(poster_name: str):
         except Exception as e:
             logger.warning(f"Failed decoding poster {poster_id}: {e}")
 
+    # Fallback: if poster not in local cache or db, check if movie was cloned to a public Telegram channel
+    try:
+        movie = await db.get_movie_by_job_id(poster_id)
+        if movie and movie.get("telegram_video_url"):
+            tg_url = movie["telegram_video_url"]
+            import re
+            import httpx
+            m = re.match(r"https?://t\.me/([^/]+)/(\d+)", tg_url)
+            if m:
+                channel_name, vid_msg_id = m.group(1), int(m.group(2))
+                for offset in (2, 1, 3):
+                    candidate_id = vid_msg_id - offset
+                    if candidate_id <= 0:
+                        continue
+                    post_url = f"https://t.me/{channel_name}/{candidate_id}"
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        resp = await client.get(post_url)
+                        if resp.status_code == 200:
+                            og_match = re.search(r'property="og:image"\s+content="([^"]+)"', resp.text)
+                            if og_match:
+                                img_url = og_match.group(1)
+                                if "telesco.pe" in img_url or "telegram" in img_url:
+                                    img_resp = await client.get(img_url)
+                                    if img_resp.status_code == 200 and len(img_resp.content) > 1000:
+                                        img_bytes = img_resp.content
+                                        await db.save_poster(poster_id, img_bytes, "image/jpeg")
+                                        try:
+                                            local_file.parent.mkdir(parents=True, exist_ok=True)
+                                            local_file.write_bytes(img_bytes)
+                                        except Exception:
+                                            pass
+                                        return Response(
+                                            content=img_bytes,
+                                            media_type="image/jpeg",
+                                            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+                                        )
+    except Exception as recover_err:
+        logger.debug(f"Poster auto-recovery notice for {poster_id}: {recover_err}")
+
     return JSONResponse({"error": "Poster not found"}, status_code=404)
 
 
