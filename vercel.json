@@ -1,3 +1,7 @@
 {
-  "outputDirectory": "app/web/static"
+  "rewrites": [
+    { "source": "/static/(.*)", "destination": "/app/web/static/$1" },
+    { "source": "/", "destination": "/app/web/static/index.html" },
+    { "source": "/(.*)", "destination": "/app/web/static/$1" }
+  ]
 }
