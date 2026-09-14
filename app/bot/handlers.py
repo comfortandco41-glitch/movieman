@@ -1,11 +1,13 @@
 """Telegram bot command handlers and message routing."""
 
-from __future__ import annotations
-
+import html
 import logging
-from typing import TYPE_CHECKING
+import re
+import uuid
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
-from telegram import Update
+from telegram import Update, Message
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -17,6 +19,7 @@ from telegram.ext import (
 
 from app.bot.callbacks import handle_callback
 from app.bot.keyboards import main_menu_keyboard
+from app.utils.filenames import format_file_size
 
 if TYPE_CHECKING:
     from app.config import Config
@@ -32,7 +35,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Handle /start command — show the main menu."""
     await update.message.reply_text(
         "🎬 <b>Movie Man Bot</b>\n\n"
-        "Download movies from MMSubChannel and upload to Telegram.\n\n"
+        "• <b>Forward any Telegram video</b> to clone it to your channel!\n"
+        "• <b>Send a movie link</b> from HomieTV or MMSubChannel to download.\n\n"
         "Choose an action below:",
         reply_markup=main_menu_keyboard(),
         parse_mode="HTML",
@@ -189,16 +193,10 @@ async def fetch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.warning(f"Failed to pre-fetch HomieTV download links for {url}: {e}")
 
-    # 2. Telegram link
+    # 2. Telegram link — prompt for poster & review manually before sending to channel
     if is_telegram_delivery_url(url):
-        job_id = await pipeline.create_job(
-            user_id=user_id,
-            movie_page_url="",
-            title="Telegram Movie Delivery",
-            bot=context.bot,
-            chat_id=update.message.chat_id,
-            telegram_url=url,
-        )
+        await _start_telegram_clone_flow(update, context, telegram_url=url, edit_msg=msg)
+        return
     # 3. Direct Mega link
     elif is_mega_url(url):
         job_id = await pipeline.create_job(
@@ -489,7 +487,13 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /cancel command — cancel the user's active job."""
+    """Handle /cancel command — cancel the user's active job or cloning state."""
+    if context.user_data.get("tg_clone_state"):
+        context.user_data["tg_clone_state"] = None
+        context.user_data["tg_clone_data"] = None
+        await update.message.reply_text("🚫 Telegram cloning cancelled.")
+        return
+
     from app.pipeline.manager import PipelineManager
 
     pipeline: PipelineManager = context.bot_data["pipeline"]
@@ -502,18 +506,447 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("ℹ️ No active job to cancel.")
 
 
+async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /skip command during manual poster/review collection."""
+    state = context.user_data.get("tg_clone_state")
+    if not state:
+        await update.message.reply_text("ℹ️ Nothing to skip.")
+        return
+
+    if state == "AWAITING_POSTER":
+        context.user_data["tg_clone_state"] = "AWAITING_REVIEW"
+        await update.message.reply_text(
+            "⏭️ <i>Poster skipped.</i>\n\n"
+            "─────────────────────────────\n"
+            "📝 <b>Step 2 of 2: Review & Storyline</b>\n\n"
+            "Please send the <b>Burmese review / description</b> text for this movie.\n"
+            "• <i>Type or paste your review text</i>, or\n"
+            "• <i>Send /skip to proceed without review</i>, or\n"
+            "• <i>Send /cancel to abort</i>",
+            parse_mode="HTML",
+        )
+    elif state == "AWAITING_REVIEW":
+        await update.message.reply_text("⏭️ <i>Review skipped.</i>")
+        await _execute_telegram_clone(update, context)
+
+
+# ── Telegram Cloning Helpers ───────────────────────────────────────────────
+
+async def _start_telegram_clone_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    video_msg: Optional[Message] = None,
+    telegram_url: str = "",
+    edit_msg: Optional[Message] = None,
+) -> None:
+    """Initiate manual poster & review collection before cloning to channel."""
+    clone_id = uuid.uuid4().hex[:8]
+    title = "Telegram Movie"
+    file_name = ""
+    file_size = 0
+    video_msg_id = None
+    from_chat_id = update.effective_chat.id
+
+    if video_msg:
+        video_msg_id = video_msg.message_id
+        if video_msg.video:
+            file_size = video_msg.video.file_size or 0
+            file_name = getattr(video_msg.video, "file_name", "") or ""
+        elif video_msg.document:
+            file_size = video_msg.document.file_size or 0
+            file_name = getattr(video_msg.document, "file_name", "") or ""
+
+        caption = (video_msg.caption or "").strip()
+        candidate_title = file_name
+        if not candidate_title and caption:
+            candidate_title = caption.split("\n")[0].strip()
+        for ext in [".mkv", ".mp4", ".avi", ".mov", ".webm", ".flv", ".ts", ".m4v", ".3gp"]:
+            if candidate_title.lower().endswith(ext):
+                candidate_title = candidate_title[:-len(ext)].strip()
+        candidate_title = re.sub(r"[._]", " ", candidate_title).strip()
+        if candidate_title:
+            title = candidate_title
+
+    elif telegram_url:
+        path_parts = telegram_url.strip("/").split("/")
+        hint = path_parts[-1] if path_parts else "movie"
+        title = f"Telegram Movie ({hint})"
+
+    context.user_data["tg_clone_state"] = "AWAITING_POSTER"
+    context.user_data["tg_clone_data"] = {
+        "clone_id": clone_id,
+        "title": title,
+        "file_name": file_name,
+        "file_size": file_size,
+        "video_msg_id": video_msg_id,
+        "from_chat_id": from_chat_id,
+        "telegram_url": telegram_url,
+        "poster_local_path": "",
+        "poster_url": "",
+        "poster_file_id": "",
+        "review_text": "",
+    }
+
+    size_str = f"\n📁 <b>Size:</b> {format_file_size(file_size)}" if file_size else ""
+    name_str = f"\n📄 <b>File:</b> <code>{html.escape(file_name)}</code>" if file_name else ""
+    url_str = f"\n🔗 <code>{html.escape(telegram_url)}</code>" if telegram_url else ""
+
+    text = (
+        f"📹 <b>Telegram Video Detected!</b>\n"
+        f"🎬 <b>Title:</b> <code>{html.escape(title)}</code>"
+        f"{name_str}{size_str}{url_str}\n\n"
+        "─────────────────────────────\n"
+        "🖼️ <b>Step 1 of 2: Poster Image</b>\n\n"
+        "Please send the <b>Poster photo/image</b> for this movie.\n"
+        "• <i>Send a photo</i>, or\n"
+        "• <i>Send /skip to proceed without a poster</i>, or\n"
+        "• <i>Send /cancel to abort</i>"
+    )
+
+    if edit_msg:
+        await edit_msg.edit_text(text, parse_mode="HTML")
+    else:
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+
+
+async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle forwarded or direct video messages to initiate cloning."""
+    msg = update.message
+    if not msg:
+        return
+
+    # If user is in AWAITING_POSTER and sends an image as a document
+    if context.user_data.get("tg_clone_state") == "AWAITING_POSTER":
+        if msg.document and (
+            (msg.document.mime_type or "").lower().startswith("image/")
+            or (msg.document.file_name or "").lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+        ):
+            await handle_photo_message(update, context)
+            return
+
+    is_vid = False
+    if msg.video:
+        is_vid = True
+    elif msg.document:
+        mime = (msg.document.mime_type or "").lower()
+        fname = (msg.document.file_name or "").lower()
+        if mime.startswith("video/") or fname.endswith(
+            (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".ts", ".m4v", ".3gp")
+        ):
+            is_vid = True
+
+    if not is_vid:
+        return
+
+    pipeline: PipelineManager = context.bot_data["pipeline"]
+    user_id = update.effective_user.id
+    if pipeline.has_active_job(user_id):
+        await msg.reply_text(
+            "⚠️ You already have an active job running.\n"
+            "Please wait for it to finish or /cancel it first.",
+            parse_mode="HTML",
+        )
+        return
+
+    await _start_telegram_clone_flow(update, context, video_msg=msg)
+
+
+async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle photo or image document upload during manual poster collection."""
+    msg = update.message
+    if not msg or (not msg.photo and not msg.document):
+        return
+
+    state = context.user_data.get("tg_clone_state")
+    if state != "AWAITING_POSTER":
+        return
+
+    data = context.user_data.get("tg_clone_data", {})
+    clone_id = data.get("clone_id", uuid.uuid4().hex[:8])
+
+    poster_dir = Path("app/web/static/posters")
+    poster_dir.mkdir(parents=True, exist_ok=True)
+    dest = poster_dir / f"{clone_id}.jpg"
+
+    if msg.photo:
+        try:
+            photo_obj = msg.photo[-1]
+            photo_file = await photo_obj.get_file()
+            await photo_file.download_to_drive(dest)
+            data["poster_local_path"] = str(dest)
+            data["poster_url"] = f"/static/posters/{clone_id}.jpg"
+            data["poster_file_id"] = photo_obj.file_id
+        except Exception as e:
+            logger.warning(f"Could not download photo: {e}")
+            data["poster_file_id"] = msg.photo[-1].file_id
+    elif msg.document and (
+        (msg.document.mime_type or "").lower().startswith("image/")
+        or (msg.document.file_name or "").lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+    ):
+        try:
+            doc_file = await msg.document.get_file()
+            await doc_file.download_to_drive(dest)
+            data["poster_local_path"] = str(dest)
+            data["poster_url"] = f"/static/posters/{clone_id}.jpg"
+            data["poster_file_id"] = msg.document.file_id
+        except Exception as e:
+            logger.warning(f"Could not download image document: {e}")
+            data["poster_file_id"] = msg.document.file_id
+    else:
+        return
+
+    caption_hint = ""
+    if msg.caption and not data.get("review_text"):
+        data["review_text"] = msg.caption.strip()
+        caption_hint = "\n<i>(Saved caption as review draft. Send /skip to keep it, or send a new review text)</i>\n"
+
+    context.user_data["tg_clone_state"] = "AWAITING_REVIEW"
+    context.user_data["tg_clone_data"] = data
+
+    await msg.reply_text(
+        "✅ <b>Poster image saved!</b>\n\n"
+        f"{caption_hint}"
+        "─────────────────────────────\n"
+        "📝 <b>Step 2 of 2: Review & Storyline</b>\n\n"
+        "Now please send the <b>Burmese review / description</b> text for this movie.\n"
+        "• <i>Type or paste your review text</i>, or\n"
+        "• <i>Send /skip to proceed without review</i>, or\n"
+        "• <i>Send /cancel to abort</i>",
+        parse_mode="HTML",
+    )
+
+
+async def _execute_telegram_clone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Deliver poster, review, and video to channel, persist to database."""
+    data = context.user_data.get("tg_clone_data", {})
+    context.user_data["tg_clone_state"] = None
+    context.user_data["tg_clone_data"] = None
+
+    status_msg = await update.effective_message.reply_text(
+        "⏳ <b>Cloning movie to channel...</b> Please wait.",
+        parse_mode="HTML",
+    )
+
+    config = context.bot_data.get("config")
+    target_channel = getattr(config, "telegram_channel_id", None) or update.effective_chat.id
+    if isinstance(target_channel, str):
+        try:
+            target_channel = int(target_channel)
+        except ValueError:
+            pass
+
+    title = data.get("title", "Telegram Movie")
+    review = (data.get("review_text") or "").strip()
+    poster_path = data.get("poster_local_path")
+    poster_file_id = data.get("poster_file_id")
+    poster_url = data.get("poster_url", "")
+    video_msg_id = data.get("video_msg_id")
+    from_chat_id = data.get("from_chat_id")
+    telegram_url = data.get("telegram_url")
+    clone_id = data.get("clone_id", uuid.uuid4().hex[:8])
+
+    pipeline = context.bot_data.get("pipeline")
+    telethon_uploader = getattr(pipeline, "_telethon_uploader", None) if pipeline else None
+
+    sent_video_id = None
+
+    # Forwarded Video Flow
+    if video_msg_id and from_chat_id:
+        # 1. Send Poster to channel (if provided)
+        if poster_path and Path(poster_path).exists():
+            try:
+                with open(poster_path, "rb") as f:
+                    await context.bot.send_photo(
+                        chat_id=target_channel,
+                        photo=f,
+                        caption=f"🎬 <b>{html.escape(title)}</b>",
+                        parse_mode="HTML",
+                    )
+            except Exception as e:
+                logger.warning(f"Could not send poster from local file to channel: {e}")
+        elif poster_file_id:
+            try:
+                await context.bot.send_photo(
+                    chat_id=target_channel,
+                    photo=poster_file_id,
+                    caption=f"🎬 <b>{html.escape(title)}</b>",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.warning(f"Could not send poster by file_id to channel: {e}")
+
+        # 2. Send Review to channel (if provided)
+        if review:
+            try:
+                review_post = (
+                    f"🎬 <b>{html.escape(title)}</b>\n\n"
+                    f"📝 <b>Review / ဇာတ်လမ်းအညွှန်း:</b>\n"
+                    f"{html.escape(review[:3600])}\n\n"
+                    f"📁 <i>Movie file below:</i> 👇"
+                )
+                await context.bot.send_message(
+                    chat_id=target_channel,
+                    text=review_post,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.warning(f"Could not send review text to channel: {e}")
+
+        # 3. Deliver Video to channel
+        try:
+            sent_msg = await context.bot.copy_message(
+                chat_id=target_channel,
+                from_chat_id=from_chat_id,
+                message_id=video_msg_id,
+                caption=f"🎬 <b>{html.escape(title[:200])}</b>",
+                parse_mode="HTML",
+            )
+            sent_video_id = sent_msg.message_id
+        except Exception as copy_err:
+            logger.warning(f"copy_message failed ({copy_err}), trying forward_message...")
+            try:
+                sent_msg = await context.bot.forward_message(
+                    chat_id=target_channel,
+                    from_chat_id=from_chat_id,
+                    message_id=video_msg_id,
+                )
+                sent_video_id = sent_msg.message_id
+            except Exception as fwd_err:
+                logger.error(f"Both copy and forward failed: {fwd_err}")
+                await status_msg.edit_text(
+                    f"❌ Failed to transfer video to channel: {fwd_err}\n\n"
+                    "Make sure the bot is an Administrator in your destination channel with 'Post Messages' permission."
+                )
+                return
+    elif telegram_url and telethon_uploader:
+        try:
+            sent_msgs = await telethon_uploader.clone_channel_media(
+                telegram_url=telegram_url,
+                target_entity=target_channel,
+                title=title,
+                description=review,
+                poster_url=poster_url,
+                job_id=clone_id,
+                source="Telegram Clone",
+            )
+            if sent_msgs:
+                sent_video_id = sent_msgs[-1].id
+        except Exception as tg_err:
+            logger.error(f"clone_channel_media failed: {tg_err}")
+            await status_msg.edit_text(f"❌ Telegram clone failed: {tg_err}")
+            return
+
+    # 4. Determine telegram_video_url
+    if sent_video_id:
+        c_str = str(target_channel)
+        if c_str.startswith("-100"):
+            telegram_video_url = f"https://t.me/c/{c_str[4:]}/{sent_video_id}"
+        elif c_str.startswith("@"):
+            telegram_video_url = f"https://t.me/{c_str[1:]}/{sent_video_id}"
+        else:
+            telegram_video_url = f"https://t.me/c/{c_str}/{sent_video_id}"
+    else:
+        telegram_video_url = telegram_url or ""
+
+    # 5. Persist completed job
+    from app.store.database import save_completed_job, add_movie
+    await save_completed_job(
+        job_id=clone_id,
+        title=title,
+        poster_url=poster_url,
+        description=review,
+        year="",
+        quality="Telegram Cloned",
+        category="",
+        duration="",
+        source="Telegram Clone",
+        movie_page_url="",
+    )
+
+    published = False
+    if telegram_video_url:
+        try:
+            await add_movie(
+                job_id=clone_id,
+                title=title,
+                poster_url=poster_url,
+                description=review,
+                year="",
+                quality="Telegram Cloned",
+                category="",
+                duration="",
+                source="Telegram Clone",
+                telegram_video_url=telegram_video_url,
+            )
+            published = True
+        except Exception as e:
+            logger.warning(f"Could not auto-add movie to database: {e}")
+
+    pub_note = (
+        "\n✅ <b>Automatically published to Movie Store website!</b>\n"
+        if published else ""
+    )
+
+    await status_msg.edit_text(
+        f"🎉 <b>Movie Successfully Cloned to Channel!</b>\n\n"
+        f"🎬 <b>{html.escape(title)}</b>\n"
+        f"📁 <b>Channel Link:</b> {telegram_video_url}\n"
+        f"🔖 <b>Job ID:</b> <code>#{clone_id[:6]}</code>\n"
+        f"{pub_note}\n"
+        f"💡 To view or re-publish:\n"
+        f"<code>/upload {clone_id[:6]} {telegram_video_url}</code>",
+        parse_mode="HTML",
+    )
+
+
 # ── Message Handler ────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle plain text messages.
 
-    Routes to URL processing if user is in "waiting_url" state,
-    or treats the text as a search query / URL to fetch.
+    Routes to review/poster input if in telegram clone flow,
+    or URL processing if user is in "waiting_url" state.
     """
     text = update.message.text.strip()
 
     if not text:
         return
+
+    # Check if user is in manual review collection state
+    state = context.user_data.get("tg_clone_state")
+    if state == "AWAITING_REVIEW":
+        data = context.user_data.get("tg_clone_data", {})
+        data["review_text"] = text
+        context.user_data["tg_clone_data"] = data
+        await _execute_telegram_clone(update, context)
+        return
+    elif state == "AWAITING_POSTER":
+        # Check if text is an image URL
+        if text.startswith(("http://", "https://")) and any(
+            text.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")
+        ):
+            data = context.user_data.get("tg_clone_data", {})
+            data["poster_url"] = text
+            context.user_data["tg_clone_state"] = "AWAITING_REVIEW"
+            context.user_data["tg_clone_data"] = data
+            await update.message.reply_text(
+                "✅ <b>Poster image URL saved!</b>\n\n"
+                "─────────────────────────────\n"
+                "📝 <b>Step 2 of 2: Review & Storyline</b>\n\n"
+                "Now please send the <b>Burmese review / description</b> text for this movie.\n"
+                "• <i>Type or paste your review text</i>, or\n"
+                "• <i>Send /skip to proceed without review</i>, or\n"
+                "• <i>Send /cancel to abort</i>",
+                parse_mode="HTML",
+            )
+            return
+        else:
+            await update.message.reply_text(
+                "🖼️ Please send a <b>photo/image</b> for the poster.\n"
+                "Or send /skip to proceed without a poster, or /cancel to abort.",
+                parse_mode="HTML",
+            )
+            return
 
     # Check if user is waiting to submit a URL
     if context.user_data.get("waiting_url"):
@@ -528,10 +961,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Default: show help
     await update.message.reply_text(
-        "💡 Send a movie URL or use the menu:\n\n"
-        "/start — Main menu\n"
-        "/latest — Latest movies\n"
-        "/fetch <url> — Process a URL",
+        "💡 <b>Send a movie URL or forward a video:</b>\n\n"
+        "• <b>Forward a video</b> to clone it to your channel\n"
+        "• <code>/fetch &lt;url&gt;</code> — Process a website link\n"
+        "• <code>/latest</code> — Latest movie releases\n"
+        "• <code>/search &lt;query&gt;</code> — Search catalog",
         parse_mode="HTML",
     )
 
@@ -541,7 +975,7 @@ async def _handle_url_input(
     context: ContextTypes.DEFAULT_TYPE,
     url: str,
 ) -> None:
-    """Process a submitted URL (movie page or Mega link)."""
+    """Process a submitted URL (movie page, Telegram link, or Mega link)."""
     from app.pipeline.manager import PipelineManager
     from app.resolver.link_resolver import is_mega_url
 
@@ -559,14 +993,8 @@ async def _handle_url_input(
     msg = await update.message.reply_text("⚙️ Processing URL...")
 
     if is_telegram_delivery_url(url):
-        job_id = await pipeline.create_job(
-            user_id=user_id,
-            movie_page_url="",
-            title="Telegram Movie Delivery",
-            bot=context.bot,
-            chat_id=update.message.chat_id,
-            telegram_url=url,
-        )
+        await _start_telegram_clone_flow(update, context, telegram_url=url, edit_msg=msg)
+        return
     elif is_mega_url(url):
         job_id = await pipeline.create_job(
             user_id=user_id,
@@ -625,7 +1053,12 @@ def create_bot(
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("upload", upload_command))
+    app.add_handler(CommandHandler("skip", skip_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+    app.add_handler(
+        MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_message)
+    )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
