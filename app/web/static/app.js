@@ -1,8 +1,8 @@
 /**
- * Movie Man Store — Frontend Application
+ * Movie Man Store — Senior Frontend UI Engine
  *
- * Fetches movies from the API and renders the movie grid,
- * hero section, category chips, search, pagination, and detail modal.
+ * Implements smooth skeleton loading, cinema cards, responsive modal,
+ * debounced search, genre filters, and Telegram video watch links.
  */
 
 (function () {
@@ -19,8 +19,10 @@
 
     // ── DOM Elements ──────────────────────────────────────────────
     const $grid = document.getElementById("movie-grid");
-    const $spinner = document.getElementById("loading-spinner");
+    const $skeleton = document.getElementById("skeleton-grid");
     const $empty = document.getElementById("empty-state");
+    const $emptyTitle = document.getElementById("empty-title");
+    const $emptyDesc = document.getElementById("empty-desc");
     const $pagination = document.getElementById("pagination");
     const $searchInput = document.getElementById("search-input");
     const $searchClear = document.getElementById("search-clear");
@@ -30,10 +32,12 @@
 
     // Hero
     const $heroBg = document.getElementById("hero-bg");
+    const $heroBadge = document.getElementById("hero-badge");
     const $heroTitle = document.getElementById("hero-title");
     const $heroDesc = document.getElementById("hero-desc");
     const $heroMeta = document.getElementById("hero-meta");
     const $heroBtn = document.getElementById("hero-btn");
+    const $heroInfoBtn = document.getElementById("hero-info-btn");
 
     // Modal
     const $modalOverlay = document.getElementById("modal-overlay");
@@ -45,10 +49,10 @@
     const $modalDesc = document.getElementById("modal-desc");
     const $modalWatchBtn = document.getElementById("modal-watch-btn");
 
-    // Header scroll effect
+    // Header scroll
     const $header = document.getElementById("header");
 
-    // ── API ───────────────────────────────────────────────────────
+    // ── API Configuration ─────────────────────────────────────────
     const DEFAULT_REMOTE_API = "https://movieman-ohdg.onrender.com";
     const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
     
@@ -62,7 +66,7 @@
     } catch (e) {}
 
     let stored = localStorage.getItem("API_BASE_URL");
-    // Clear old temporary tunnel URLs so they automatically upgrade to Render
+    // Clear old temporary tunnel URLs so visitors use the live cloud backend
     if (stored && (stored.includes("loca.lt") || stored.includes("good-guests-film"))) {
         stored = DEFAULT_REMOTE_API;
         localStorage.setItem("API_BASE_URL", stored);
@@ -79,7 +83,7 @@
             e.preventDefault();
             const current = localStorage.getItem("API_BASE_URL") || API_BASE;
             const input = prompt(
-                "Enter your Render backend URL (e.g., https://movieman.onrender.com):",
+                "Enter your Render backend URL (e.g., https://movieman-ohdg.onrender.com):",
                 current
             );
             if (input !== null) {
@@ -96,10 +100,12 @@
 
     const API_HEADERS = { "bypass-tunnel-reminder": "1" };
 
+    // ── API Client ────────────────────────────────────────────────
+
     async function fetchMovies(page = 1, search = "", category = "") {
         const params = new URLSearchParams({
             page: page.toString(),
-            per_page: "20",
+            per_page: "24",
         });
         if (search) params.set("search", search);
         if (category) params.set("category", category);
@@ -119,28 +125,48 @@
         return response.json();
     }
 
-    async function fetchMovie(id) {
-        const response = await fetch(`${API_BASE}/api/movies/${id}`, {
-            headers: API_HEADERS,
-        });
-        if (!response.ok) throw new Error("Movie not found");
-        return response.json();
+    // ── Helper Utilities ──────────────────────────────────────────
+
+    function escapeHtml(str) {
+        if (!str) return "";
+        const div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function cleanTitle(raw) {
+        if (!raw) return "Untitled";
+        // Clean out technical brackets like "(WEB-DL - Telegram - 1.5 GB)" for presentation
+        const cleaned = raw.replace(/\s*\([^)]*(?:WEB-DL|Telegram|720p|1080p|GB|MB|HEVC)[^)]*\)/gi, "").trim();
+        return cleaned || raw;
+    }
+
+    function formatQuality(rawQuality, fullTitle) {
+        if (rawQuality) {
+            const short = rawQuality.split(/[-–—]/)[0].trim();
+            if (short) return short;
+        }
+        if (fullTitle && fullTitle.includes("1080p")) return "1080p";
+        if (fullTitle && fullTitle.includes("720p")) return "720p";
+        return "HD";
     }
 
     // ── Rendering ─────────────────────────────────────────────────
 
-    function renderMovieCard(movie, index) {
+    function renderMovieCard(movie) {
         const card = document.createElement("div");
         card.className = "movie-card";
-        card.style.animationDelay = `${Math.min(index * 0.05, 0.5)}s`;
         card.dataset.id = movie.id;
 
+        const displayTitle = cleanTitle(movie.title);
+        const qualityText = formatQuality(movie.quality, movie.title);
+
         const posterHtml = movie.poster_url
-            ? `<img src="${escapeHtml(movie.poster_url)}" alt="${escapeHtml(movie.title)}" loading="lazy">`
+            ? `<img src="${escapeHtml(movie.poster_url)}" alt="${escapeHtml(displayTitle)}" loading="lazy">`
             : `<div class="poster-placeholder">🎬</div>`;
 
-        const qualityBadge = movie.quality
-            ? `<div class="quality-badge">${escapeHtml(movie.quality)}</div>`
+        const qualityBadge = qualityText
+            ? `<div class="card-quality-badge">${escapeHtml(qualityText)}</div>`
             : "";
 
         const yearText = movie.year || "";
@@ -156,13 +182,13 @@
                 ${posterHtml}
                 ${qualityBadge}
                 <div class="play-overlay">
-                    <div class="play-icon">
-                        <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                    <div class="play-icon-wrap" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                     </div>
                 </div>
             </div>
             <div class="movie-card-info">
-                <div class="movie-card-title" title="${escapeHtml(movie.title)}">${escapeHtml(movie.title)}</div>
+                <div class="movie-card-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
                 <div class="movie-card-meta">${metaHtml}</div>
             </div>
         `;
@@ -173,8 +199,8 @@
 
     function renderGrid(movieList) {
         $grid.innerHTML = "";
-        movieList.forEach((movie, i) => {
-            $grid.appendChild(renderMovieCard(movie, i));
+        movieList.forEach((movie) => {
+            $grid.appendChild(renderMovieCard(movie));
         });
     }
 
@@ -216,7 +242,7 @@
             btn.addEventListener("click", () => {
                 currentPage = targetPage;
                 loadMovies();
-                window.scrollTo({ top: 400, behavior: "smooth" });
+                window.scrollTo({ top: 380, behavior: "smooth" });
             });
         }
         return btn;
@@ -238,28 +264,47 @@
     function renderHero(movie) {
         if (!movie) {
             $heroBg.style.backgroundImage = "";
+            $heroBadge.textContent = "🔥 FEATURED COLLECTION";
             $heroTitle.textContent = "Welcome to MovieMan";
-            $heroDesc.textContent = "Browse and watch the latest movies with Burmese subtitles";
+            $heroDesc.textContent = "Browse and watch the latest movies with Burmese subtitles and cloud streaming.";
             $heroMeta.innerHTML = "";
             $heroBtn.style.display = "none";
+            $heroInfoBtn.style.display = "none";
             return;
         }
+
         if (movie.poster_url) {
             $heroBg.style.backgroundImage = `url('${movie.poster_url}')`;
         }
-        $heroTitle.textContent = movie.title;
-        $heroDesc.textContent = movie.description
-            ? movie.description.substring(0, 200) + (movie.description.length > 200 ? "…" : "")
-            : "Browse and watch the latest movies with Burmese subtitles";
+
+        const displayTitle = cleanTitle(movie.title);
+        $heroBadge.textContent = "🔥 LATEST RELEASE";
+        $heroTitle.textContent = displayTitle;
+        
+        // Clean first paragraph of description
+        let descSnippet = (movie.description || "").trim();
+        const firstBreak = descSnippet.indexOf("\n\n");
+        if (firstBreak !== -1) {
+            descSnippet = descSnippet.substring(0, firstBreak);
+        }
+        if (descSnippet.length > 240) {
+            descSnippet = descSnippet.substring(0, 240) + "…";
+        }
+        $heroDesc.textContent = descSnippet || "Experience this release with Burmese subtitles and full audio.";
 
         let metaHtml = "";
-        if (movie.year) metaHtml += `<span class="meta-tag">📅 ${escapeHtml(movie.year)}</span>`;
-        if (movie.quality) metaHtml += `<span class="meta-tag">📊 ${escapeHtml(movie.quality)}</span>`;
-        if (movie.category) {
-            const cat = movie.category.split(",")[0].trim();
-            metaHtml += `<span class="meta-tag">🏷️ ${escapeHtml(cat)}</span>`;
+        if (movie.year) metaHtml += `<span class="meta-chip">📅 ${escapeHtml(movie.year)}</span>`;
+        if (movie.quality) {
+            const q = formatQuality(movie.quality, movie.title);
+            metaHtml += `<span class="meta-chip quality">📊 ${escapeHtml(q)}</span>`;
         }
-        if (movie.duration) metaHtml += `<span class="meta-tag">⏱️ ${escapeHtml(movie.duration)}</span>`;
+        if (movie.category) {
+            const cats = movie.category.split(",").slice(0, 2);
+            cats.forEach(c => {
+                metaHtml += `<span class="meta-chip">🏷️ ${escapeHtml(c.trim())}</span>`;
+            });
+        }
+        if (movie.duration) metaHtml += `<span class="meta-chip">⏱️ ${escapeHtml(movie.duration)}</span>`;
         $heroMeta.innerHTML = metaHtml;
 
         if (movie.telegram_video_url) {
@@ -268,6 +313,9 @@
         } else {
             $heroBtn.style.display = "none";
         }
+
+        $heroInfoBtn.style.display = "inline-flex";
+        $heroInfoBtn.onclick = () => openModal(movie);
     }
 
     async function renderCategories() {
@@ -275,7 +323,6 @@
             const data = await fetchCategories();
             const cats = data.categories || [];
 
-            // Keep the "All Genres" chip
             $categoriesScroll.innerHTML = '<button class="chip active" data-category="">All Genres</button>';
 
             cats.forEach((cat) => {
@@ -286,7 +333,6 @@
                 $categoriesScroll.appendChild(chip);
             });
 
-            // Click handlers
             $categoriesScroll.querySelectorAll(".chip").forEach((chip) => {
                 chip.addEventListener("click", () => {
                     $categoriesScroll.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
@@ -305,22 +351,25 @@
     // ── Modal ─────────────────────────────────────────────────────
 
     function openModal(movie) {
+        const displayTitle = cleanTitle(movie.title);
         $modalPoster.src = movie.poster_url || "";
-        $modalPoster.alt = movie.title;
+        $modalPoster.alt = displayTitle;
         $modalPoster.style.display = movie.poster_url ? "block" : "none";
-        $modalQuality.textContent = movie.quality || "";
-        $modalQuality.style.display = movie.quality ? "block" : "none";
-        $modalTitle.textContent = movie.title;
+        
+        const q = formatQuality(movie.quality, movie.title);
+        $modalQuality.textContent = q;
+        $modalQuality.style.display = q ? "block" : "none";
+        $modalTitle.textContent = displayTitle;
 
         let metaHtml = "";
-        if (movie.year) metaHtml += `<span class="meta-tag">📅 ${escapeHtml(movie.year)}</span>`;
-        if (movie.quality) metaHtml += `<span class="meta-tag">📊 ${escapeHtml(movie.quality)}</span>`;
-        if (movie.duration) metaHtml += `<span class="meta-tag">⏱️ ${escapeHtml(movie.duration)}</span>`;
-        if (movie.category) metaHtml += `<span class="meta-tag">🏷️ ${escapeHtml(movie.category)}</span>`;
-        if (movie.source) metaHtml += `<span class="meta-tag">📡 ${escapeHtml(movie.source)}</span>`;
+        if (movie.year) metaHtml += `<span class="meta-chip">📅 ${escapeHtml(movie.year)}</span>`;
+        if (movie.quality) metaHtml += `<span class="meta-chip quality">📊 ${escapeHtml(movie.quality)}</span>`;
+        if (movie.duration) metaHtml += `<span class="meta-chip">⏱️ ${escapeHtml(movie.duration)}</span>`;
+        if (movie.category) metaHtml += `<span class="meta-chip">🏷️ ${escapeHtml(movie.category)}</span>`;
+        if (movie.source) metaHtml += `<span class="meta-chip">📡 ${escapeHtml(movie.source)}</span>`;
         $modalMeta.innerHTML = metaHtml;
 
-        $modalDesc.textContent = movie.description || "No review available.";
+        $modalDesc.textContent = (movie.description || "No review available for this movie.").trim();
 
         if (movie.telegram_video_url) {
             $modalWatchBtn.href = movie.telegram_video_url;
@@ -330,11 +379,13 @@
         }
 
         $modalOverlay.classList.add("open");
+        $modalOverlay.setAttribute("aria-hidden", "false");
         document.body.style.overflow = "hidden";
     }
 
     function closeModal() {
         $modalOverlay.classList.remove("open");
+        $modalOverlay.setAttribute("aria-hidden", "true");
         document.body.style.overflow = "";
     }
 
@@ -342,14 +393,27 @@
     $modalOverlay.addEventListener("click", (e) => {
         if (e.target === $modalOverlay) closeModal();
     });
+
     document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") closeModal();
+        if (e.key === "Escape" && $modalOverlay.classList.contains("open")) {
+            closeModal();
+        }
     });
 
-    // ── Search ────────────────────────────────────────────────────
+    // ── Search & Filter ───────────────────────────────────────────
 
-    $searchInput.addEventListener("input", () => {
-        const val = $searchInput.value.trim();
+    function updateSectionTitle() {
+        if (currentSearch) {
+            $sectionTitle.textContent = `🔍 Search: "${currentSearch}"`;
+        } else if (currentCategory) {
+            $sectionTitle.textContent = `🎬 ${currentCategory} Movies`;
+        } else {
+            $sectionTitle.textContent = "🎬 Available Releases";
+        }
+    }
+
+    $searchInput.addEventListener("input", (e) => {
+        const val = e.target.value.trim();
         $searchClear.classList.toggle("visible", val.length > 0);
 
         clearTimeout(debounceTimer);
@@ -358,7 +422,7 @@
             currentPage = 1;
             updateSectionTitle();
             loadMovies();
-        }, 350);
+        }, 300);
     });
 
     $searchClear.addEventListener("click", () => {
@@ -368,44 +432,61 @@
         currentPage = 1;
         updateSectionTitle();
         loadMovies();
+        $searchInput.focus();
     });
 
-    // ── Header scroll effect ──────────────────────────────────────
+    // Nav filters
+    const $navAll = document.getElementById("nav-all");
+    const $navLatest = document.getElementById("nav-latest");
 
+    if ($navAll) {
+        $navAll.addEventListener("click", () => {
+            $navAll.classList.add("active");
+            if ($navLatest) $navLatest.classList.remove("active");
+            currentCategory = "";
+            currentSearch = "";
+            $searchInput.value = "";
+            $searchClear.classList.remove("visible");
+            $categoriesScroll.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+            const first = $categoriesScroll.querySelector(".chip");
+            if (first) first.classList.add("active");
+            currentPage = 1;
+            updateSectionTitle();
+            loadMovies();
+        });
+    }
+
+    if ($navLatest) {
+        $navLatest.addEventListener("click", () => {
+            $navLatest.classList.add("active");
+            if ($navAll) $navAll.classList.remove("active");
+            currentPage = 1;
+            loadMovies();
+            window.scrollTo({ top: 400, behavior: "smooth" });
+        });
+    }
+
+    // Header scroll blur
     window.addEventListener("scroll", () => {
-        $header.classList.toggle("scrolled", window.scrollY > 50);
+        if (window.scrollY > 20) {
+            $header.classList.add("scrolled");
+        } else {
+            $header.classList.remove("scrolled");
+        }
     });
 
-    // ── Helpers ───────────────────────────────────────────────────
-
-    function escapeHtml(str) {
-        const div = document.createElement("div");
-        div.textContent = str;
-        return div.innerHTML;
-    }
-
-    function updateSectionTitle() {
-        if (currentSearch) {
-            $sectionTitle.textContent = `🔍 Results for "${currentSearch}"`;
-        } else if (currentCategory) {
-            $sectionTitle.textContent = `🏷️ ${currentCategory}`;
-        } else {
-            $sectionTitle.textContent = "🎬 All Movies";
-        }
-    }
+    // ── Data Loading ──────────────────────────────────────────────
 
     function showLoading() {
-        $grid.innerHTML = "";
-        $pagination.innerHTML = "";
+        $skeleton.style.display = "grid";
+        $grid.style.display = "none";
         $empty.style.display = "none";
-        $spinner.style.display = "flex";
     }
 
     function hideLoading() {
-        $spinner.style.display = "none";
+        $skeleton.style.display = "none";
+        $grid.style.display = "grid";
     }
-
-    // ── Main Load ─────────────────────────────────────────────────
 
     async function loadMovies() {
         showLoading();
@@ -419,15 +500,13 @@
 
             if (movies.length === 0) {
                 $empty.style.display = "block";
-                $movieCount.textContent = "";
-                const emptyHeading = $empty.querySelector("h3");
-                const emptyText = $empty.querySelector("p");
+                $movieCount.textContent = "0 releases";
                 if (currentSearch || currentCategory) {
-                    if (emptyHeading) emptyHeading.textContent = "No movies found";
-                    if (emptyText) emptyText.textContent = "Try a different search or filter.";
+                    $emptyTitle.textContent = "No movies found";
+                    $emptyDesc.textContent = "Try searching for a different title or select 'All Genres'.";
                 } else {
-                    if (emptyHeading) emptyHeading.textContent = "No Movies Published Yet";
-                    if (emptyText) emptyText.innerHTML = "Process a movie in the Telegram bot, then send:<br><br><code>/upload &lt;job_id&gt; &lt;telegram_video_url&gt;</code>";
+                    $emptyTitle.textContent = "No Movies Published Yet";
+                    $emptyDesc.innerHTML = "Process a movie in the Telegram bot, then send:<br><br><code>/upload &lt;job_id&gt; &lt;telegram_video_url&gt;</code>";
                 }
                 renderHero(null);
             } else {
@@ -436,7 +515,6 @@
                 renderGrid(movies);
                 renderPagination();
 
-                // Update hero with the latest movie (only on first page, no filter)
                 if (currentPage === 1 && !currentSearch && !currentCategory && movies.length > 0) {
                     renderHero(movies[0]);
                 }
@@ -445,26 +523,22 @@
             hideLoading();
             console.error("Failed to load movies:", err);
             $empty.style.display = "block";
-            const emptyHeading = $empty.querySelector("h3");
-            const emptyText = $empty.querySelector("p");
-            if (emptyHeading) emptyHeading.textContent = "Backend Not Connected";
-            if (emptyText) {
-                emptyText.innerHTML = `
-                    The frontend is live, but it cannot reach your bot backend yet.<br><br>
-                    <button id="set-api-btn" style="padding:10px 20px;background:#6366f1;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:600;font-size:14px;box-shadow:0 4px 14px rgba(99,102,241,0.4);">
-                        🔗 Connect Backend URL
-                    </button>
-                `;
-                const btn = document.getElementById("set-api-btn");
-                if (btn) {
-                    btn.onclick = () => {
-                        const url = prompt("Enter your public backend URL (e.g. from Cloudflare Tunnel or Render):", API_BASE);
-                        if (url !== null) {
-                            localStorage.setItem("API_BASE_URL", url.trim());
-                            window.location.reload();
-                        }
-                    };
-                }
+            $emptyTitle.textContent = "Backend Connection";
+            $emptyDesc.innerHTML = `
+                Could not connect to the cloud movie database.<br><br>
+                <button id="set-api-btn" class="btn btn-primary">
+                    🔗 Connect Backend URL
+                </button>
+            `;
+            const btn = document.getElementById("set-api-btn");
+            if (btn) {
+                btn.onclick = () => {
+                    const url = prompt("Enter your Render backend URL:", API_BASE);
+                    if (url !== null) {
+                        localStorage.setItem("API_BASE_URL", url.trim());
+                        window.location.reload();
+                    }
+                };
             }
         }
     }

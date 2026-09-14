@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Movie Man — Premium Movie Store</title>
-    <meta name="description" content="Browse and watch the latest movies with Burmese subtitles. Powered by Movie Man Bot.">
+    <title>Movie Man — Stream Movies & Reviews</title>
+    <meta name="description" content="Browse, search, and watch the latest movies with Burmese subtitles. High quality streaming links powered by Movie Man.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -15,79 +15,98 @@
     <!-- ── Header ──────────────────────────────────────────────── -->
     <header class="header" id="header">
         <div class="header-inner">
-            <a href="/" class="logo">
+            <a href="/" class="logo" aria-label="Movie Man Home">
                 <span class="logo-icon">🎬</span>
                 <span class="logo-text">Movie<span class="logo-accent">Man</span></span>
             </a>
-            <div class="search-bar" id="search-bar">
-                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+
+            <div class="search-bar" id="search-bar" role="search">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <circle cx="11" cy="11" r="8"></circle>
                     <path d="m21 21-4.3-4.3"></path>
                 </svg>
-                <input type="text" id="search-input" placeholder="Search movies..." autocomplete="off">
+                <input type="text" id="search-input" placeholder="Search by title, genre, year..." autocomplete="off" aria-label="Search movies">
                 <button class="search-clear" id="search-clear" aria-label="Clear search">&times;</button>
             </div>
-            <nav class="header-nav">
-                <a href="#" class="nav-link active" data-filter="all">All</a>
-                <a href="#" class="nav-link" data-filter="latest">Latest</a>
-                <a href="#" class="nav-link" id="api-settings-btn" title="Configure Backend URL">⚙️ API</a>
+
+            <nav class="header-nav" aria-label="Main Navigation">
+                <button class="nav-link active" data-filter="all" id="nav-all">All</button>
+                <button class="nav-link" data-filter="latest" id="nav-latest">Latest</button>
+                <button class="nav-link api-btn" id="api-settings-btn" title="Configure Backend URL">⚙️ API</button>
             </nav>
         </div>
     </header>
 
-    <!-- ── Hero Section ────────────────────────────────────────── -->
-    <section class="hero" id="hero">
+    <!-- ── Hero Banner ─────────────────────────────────────────── -->
+    <section class="hero" id="hero" aria-label="Featured Movie">
         <div class="hero-bg" id="hero-bg"></div>
         <div class="hero-overlay"></div>
         <div class="hero-content" id="hero-content">
-            <div class="hero-badge">🔥 Featured</div>
+            <div class="hero-badge" id="hero-badge">🔥 FEATURED RELEASE</div>
             <h1 class="hero-title" id="hero-title">Welcome to MovieMan</h1>
-            <p class="hero-desc" id="hero-desc">Browse and watch the latest movies with Burmese subtitles</p>
+            <p class="hero-desc" id="hero-desc">Discover the latest cinema releases with Burmese subtitles and high-definition streaming.</p>
             <div class="hero-meta" id="hero-meta"></div>
-            <button class="hero-btn" id="hero-btn" style="display:none;">
-                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                Watch Now
-            </button>
+            <div class="hero-actions" id="hero-actions">
+                <button class="btn btn-primary" id="hero-btn" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                    <span>Watch on Telegram</span>
+                </button>
+                <button class="btn btn-secondary" id="hero-info-btn" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                    <span>More Details</span>
+                </button>
+            </div>
         </div>
     </section>
 
-    <!-- ── Category Chips ──────────────────────────────────────── -->
-    <section class="categories-section" id="categories-section">
+    <!-- ── Category Filter Chips ───────────────────────────────── -->
+    <section class="categories-section" id="categories-section" aria-label="Genre Filters">
         <div class="categories-scroll" id="categories-scroll">
             <button class="chip active" data-category="">All Genres</button>
         </div>
     </section>
 
-    <!-- ── Movie Grid ──────────────────────────────────────────── -->
+    <!-- ── Main Movie Catalog ──────────────────────────────────── -->
     <main class="main-content">
         <div class="section-header">
-            <h2 class="section-title" id="section-title">🎬 All Movies</h2>
-            <span class="movie-count" id="movie-count"></span>
+            <div class="section-title-wrap">
+                <h2 class="section-title" id="section-title">🎬 Available Releases</h2>
+                <span class="movie-count" id="movie-count"></span>
+            </div>
         </div>
 
+        <!-- Skeleton Loading Placeholders -->
+        <div class="skeleton-grid" id="skeleton-grid" aria-hidden="true">
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+            <div class="skeleton-card"><div class="skeleton-poster"></div><div class="skeleton-line title"></div><div class="skeleton-line meta"></div></div>
+        </div>
+
+        <!-- Active Movie Grid -->
         <div class="movie-grid" id="movie-grid">
-            <!-- Movie cards rendered by JS -->
+            <!-- Rendered by JavaScript -->
         </div>
 
-        <div class="loading-spinner" id="loading-spinner" style="display:none;">
-            <div class="spinner"></div>
-            <p>Loading movies...</p>
-        </div>
-
+        <!-- Empty & Error States -->
         <div class="empty-state" id="empty-state" style="display:none;">
             <div class="empty-icon">🎬</div>
-            <h3>No movies found</h3>
-            <p>Try a different search or check back later.</p>
+            <h3 id="empty-title">No movies found</h3>
+            <p id="empty-desc">Try another keyword or select a different genre.</p>
         </div>
 
-        <!-- ── Pagination ──────────────────────────────────────── -->
-        <div class="pagination" id="pagination"></div>
+        <!-- Pagination -->
+        <nav class="pagination" id="pagination" aria-label="Catalog Pagination"></nav>
     </main>
 
     <!-- ── Movie Detail Modal ──────────────────────────────────── -->
-    <div class="modal-overlay" id="modal-overlay">
+    <div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true" aria-hidden="true">
         <div class="modal" id="modal">
-            <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+            <button class="modal-close" id="modal-close" aria-label="Close details">&times;</button>
             <div class="modal-poster-wrap">
                 <img class="modal-poster" id="modal-poster" alt="" loading="lazy">
                 <div class="modal-quality-badge" id="modal-quality"></div>
@@ -95,20 +114,26 @@
             <div class="modal-body">
                 <h2 class="modal-title" id="modal-title"></h2>
                 <div class="modal-meta" id="modal-meta"></div>
+                <div class="modal-desc-heading">📝 ဇာတ်လမ်းအညွှန်း (Storyline & Review)</div>
                 <div class="modal-desc" id="modal-desc"></div>
-                <a class="modal-watch-btn" id="modal-watch-btn" href="#" target="_blank" rel="noopener">
-                    <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
-                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
-                    </svg>
-                    Watch on Telegram
-                </a>
+                <div class="modal-actions">
+                    <a class="btn btn-primary btn-large" id="modal-watch-btn" href="#" target="_blank" rel="noopener">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20" aria-hidden="true">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                        </svg>
+                        <span>Watch on Telegram</span>
+                    </a>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- ── Footer ──────────────────────────────────────────────── -->
     <footer class="footer">
-        <p>Powered by <strong>Movie Man Bot</strong> &mdash; Built with ❤️</p>
+        <div class="footer-inner">
+            <p><strong>Movie Man</strong> &mdash; Fast cloud-powered Telegram streaming catalog.</p>
+            <p class="footer-sub">Updated directly from the bot pipeline.</p>
+        </div>
     </footer>
 
     <script src="app.js"></script>
