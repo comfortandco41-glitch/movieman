@@ -70,6 +70,12 @@ async def api_get_categories():
     return {"categories": categories}
 
 
+@app.get("/health", response_class=JSONResponse)
+async def health_check():
+    """Health check endpoint for Render keep-alive and uptime monitoring."""
+    return {"status": "ok", "service": "movie-man"}
+
+
 # ── Static Files & Frontend ───────────────────────────────────────────────
 
 # Mount static files (CSS, JS, images)

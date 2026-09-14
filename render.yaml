@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: movieman
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
+    startCommand: python -m app.main
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        sync: false
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELETHON_SESSION
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "2000"
+      - key: MMSUBCHANNEL_BASE_URL
+        value: "https://mmsubchannel.com"
+      - key: SCRAPE_INTERVAL_MINUTES
+        value: "0"
+      - key: WORKSPACE_DIR
+        value: "./workspace"
+      - key: MAX_CONCURRENT_JOBS
+        value: "1"
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: BROWSER_TYPE
+        value: "chromium"
+      - key: BROWSER_HEADLESS
+        value: "true"
+      - key: WEB_HOST
+        value: "0.0.0.0"

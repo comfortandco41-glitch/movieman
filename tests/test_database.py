@@ -182,3 +182,24 @@ async def test_web_api_endpoints():
         resp_html = await ac.get("/")
         assert resp_html.status_code == 200
         assert "Movie Man" in resp_html.text
+
+
+@pytest.mark.asyncio
+async def test_turso_backend_instantiation():
+    """Verify TursoBackend initializes and normalizes libsql URL."""
+    from app.store.database import TursoBackend
+
+    backend = TursoBackend("libsql://my-db.turso.io", "test_token_123")
+    assert backend.url == "libsql://my-db.turso.io"
+    assert backend.auth_token == "test_token_123"
+
+
+def test_port_env_resolution(monkeypatch):
+    """Verify Config automatically resolves Render PORT environment variable."""
+    monkeypatch.setenv("PORT", "10000")
+    from app.config import Config
+
+    cfg = Config(
+        telegram_bot_token="test:token",
+    )
+    assert cfg.web_port == 10000

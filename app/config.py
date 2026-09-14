@@ -71,6 +71,16 @@ class Config(BaseSettings):
     web_host: str = Field("0.0.0.0", description="Web server bind host")
     web_port: int = Field(8080, ge=1, le=65535, description="Web server port")
 
+    # Turso Cloud SQLite (optional, falls back to local workspace/movie_store.db)
+    turso_database_url: Optional[str] = Field(
+        None,
+        description="Turso database URL (e.g. libsql://movieman.turso.io or https://...)",
+    )
+    turso_auth_token: Optional[str] = Field(
+        None,
+        description="Turso auth token for cloud SQLite access",
+    )
+
     # Logging
     log_level: str = Field("INFO", description="Log level: DEBUG, INFO, WARNING, ERROR")
 
@@ -83,6 +93,18 @@ class Config(BaseSettings):
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
     }
+
+    @field_validator("web_port", mode="before")
+    @classmethod
+    def resolve_port(cls, v: Any) -> Any:
+        """Support standard PORT environment variable from Render / Railway."""
+        port_env = os.getenv("PORT")
+        if port_env:
+            try:
+                return int(port_env)
+            except ValueError:
+                pass
+        return v
 
     @field_validator("workspace_dir")
     @classmethod
@@ -156,6 +178,9 @@ class Config(BaseSettings):
             f"  max_upload_size_mb={self.max_upload_size_mb},\n"
             f"  browser_type={self.browser_type},\n"
             f"  browser_headless={self.browser_headless},\n"
+            f"  web_port={self.web_port},\n"
+            f"  turso_database_url={self.turso_database_url or '<not set>'},\n"
+            f"  turso_auth_token={'<set>' if self.turso_auth_token else '<not set>'},\n"
             f")"
         )
 
