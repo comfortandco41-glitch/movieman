@@ -10,6 +10,7 @@ High-performance Telegram bot pipeline that automates scraping movies from [mmsu
 - **Interactive Server & Quality Selection**: When releases have multiple download servers (MegaUp, Usersdrive, Yoteshin, Telegram, 1080p, 720p), select your preferred server right from Telegram inline buttons.
 - **Intelligent Ad Shortener Bypass**: Automated redirect resolution follows intermediate ad links and countdown pages directly to original download endpoints.
 - **Multi-Protocol Download Engine**: High-speed Mega.nz chunk downloader (`mega.py`) + async HTTP streaming downloader (`httpx`) + Telegram direct channel/bot cloner.
+- **Movie Store Web Frontend**: Modern glassmorphism web store served via FastAPI and deployable to Vercel.
 - **Telegram MTProto 2GB Uploads**: Custom parallel multipart uploader with OpenSSL hardware acceleration (`cryptg`) capable of transferring full 1080p/4K releases up to 2GB.
 - **Instant Search**: Search movie catalogs across sources with `/search <keyword>`.
 - **Modern Python 3.11 - 3.13+ Support**: Built-in runtime compatibility layer (`app.utils.compat`) supporting modern async runtimes.
