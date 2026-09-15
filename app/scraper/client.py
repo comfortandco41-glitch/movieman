@@ -52,28 +52,50 @@ class MMSubChannelScraper:
     async def _ensure_browser(self) -> BrowserContext:
         """Ensure the browser is initialized and return a context."""
         async with self._lock:
-            if self._browser is None or not self._browser.is_connected():
+            if self._context is None:
                 self._playwright = await async_playwright().start()
                 launcher = getattr(self._playwright, self._browser_type)
-                self._browser = await launcher.launch(headless=self._headless)
-                self._context = await self._browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1920, "height": 1080},
-                )
 
-                # Block heavy assets (images, media, fonts) to speed up navigation by 2x-3x
-                async def _block_heavy_assets(route):
-                    if route.request.resource_type in ("image", "media", "font"):
-                        await route.abort()
-                    else:
-                        await route.continue_()
+                # Check for Google Chrome channel on Windows/Linux/Mac
+                channel = None
+                if self._browser_type == "chromium":
+                    import os
+                    chrome_paths = [
+                        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                    ]
+                    for cp in chrome_paths:
+                        if os.path.exists(cp):
+                            channel = "chrome" if "Chrome" in cp else "msedge"
+                            break
 
-                await self._context.route("**/*", _block_heavy_assets)
-                logger.info(f"Browser launched: {self._browser_type} (headless={self._headless}) with asset blocking")
+                profile_dir = os.environ.get("BROWSER_PROFILE_DIR") or os.path.join(os.getcwd(), ".browser_profile")
+                os.makedirs(profile_dir, exist_ok=True)
+
+                launch_kwargs = {
+                    "user_data_dir": profile_dir,
+                    "headless": self._headless,
+                    "args": [
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                    ],
+                    "viewport": {"width": 1280, "height": 800},
+                    "accept_downloads": True,
+                }
+                if channel:
+                    launch_kwargs["channel"] = channel
+
+                try:
+                    self._context = await launcher.launch_persistent_context(**launch_kwargs)
+                except Exception as e:
+                    logger.warning(f"Failed to launch with channel {channel}: {e}. Retrying with default chromium...")
+                    launch_kwargs.pop("channel", None)
+                    self._context = await launcher.launch_persistent_context(**launch_kwargs)
+
+                await self._context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                logger.info(f"Browser launched: {self._browser_type} (channel={channel}, headless={self._headless}) with persistent context")
 
             return self._context
 

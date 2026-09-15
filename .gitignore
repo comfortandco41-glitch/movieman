@@ -34,3 +34,5 @@ Thumbs.db
 # Playwright
 playwright-report/
 test-results/
+.browser_profile/
+*.html

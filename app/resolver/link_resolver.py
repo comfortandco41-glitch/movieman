@@ -111,6 +111,10 @@ def is_direct_url(url: str) -> bool:
     if not clean.startswith(("http://", "https://")):
         return False
 
+    # Never treat an HTML page as a direct file download
+    if ".html" in clean.lower():
+        return False
+
     try:
         parsed = urlparse(clean)
         netloc = parsed.netloc.lower()
@@ -194,9 +198,11 @@ def extract_direct_url_from_text(text: str) -> Optional[str]:
         The first direct video URL found, or None.
     """
     for pattern in _DIRECT_URL_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return normalize_download_url(match.group(0))
+        for match in pattern.finditer(text):
+            found_url = match.group(0)
+            if ".html" in found_url or "usersdrive.com" in found_url or "]" in found_url:
+                continue
+            return normalize_download_url(found_url)
     return None
 
 
@@ -373,8 +379,7 @@ class LinkResolver:
         Returns:
             The direct download URL, or None if not found.
         """
-        logger.info(f"Using UsersDrive resolver for: {url}")
-        page = await self._context.new_page()
+        page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         captured_urls: list[str] = []
         popup_pages: list = []
 
@@ -445,37 +450,58 @@ class LinkResolver:
                     pass
             popup_pages.clear()
 
-            # Step 1: Wait for countdown timer (~5-10 seconds) to complete.
-            # When countdown hits 0, UsersDrive JS removes disabled attribute/class from #downloadbtn.
-            logger.info("[UsersDrive] Waiting for countdown timer to complete...")
-            try:
-                await page.wait_for_selector(
-                    "#downloadbtn:not([disabled]):not(.disabled)",
-                    timeout=15000,
-                )
-                logger.debug("[UsersDrive] Countdown finished, #downloadbtn enabled")
-            except Exception:
-                logger.debug("[UsersDrive] Selector wait timed out, waiting fixed delay...")
-                await page.wait_for_timeout(10000)
+            # Step 1: Wait for countdown timer (~5-10 seconds) to complete and Turnstile token
+            logger.info("[UsersDrive] Waiting for countdown timer and Turnstile token...")
+            for sec in range(25):
+                await page.wait_for_timeout(1000)
+                status = await page.evaluate("""() => {
+                    const btn = document.getElementById('downloadbtn');
+                    const cf = document.querySelector('input[name="cf-turnstile-response"]');
+                    const disabled = btn ? (btn.disabled || btn.classList.contains('disabled')) : true;
+                    const cfLen = cf && cf.value ? cf.value.length : 0;
+                    return {
+                        disabled: disabled,
+                        cf_len: cfLen
+                    };
+                }""")
+                # If countdown reached 0 but Turnstile checkbox wasn't auto-checked, click it
+                if sec >= 8 and status.get("cf_len", 0) == 0:
+                    try:
+                        for f in page.frames:
+                            if "challenges.cloudflare.com" in f.url:
+                                box = await f.query_selector("input[type='checkbox'], #challenge-stage, .ctp-checkbox-label, body")
+                                if box:
+                                    await box.click()
+                                    break
+                    except Exception:
+                        pass
 
-            # Extra 1.5s for Cloudflare Turnstile verification callback to fire
-            await page.wait_for_timeout(1500)
+                if not status.get("disabled") and (status.get("cf_len", 0) > 0 or sec >= 18):
+                    logger.info(f"[UsersDrive] Countdown finished and Turnstile ready at {sec}s (token_len={status.get('cf_len')})")
+                    break
 
-            # Step 2: Click the 'Create Download Link' button / submit form
+            # Extra 1s grace period
+            await page.wait_for_timeout(1000)
+
+            # Step 2: Submit the real download form directly
+            # Note: UsersDrive has two forms named 'F1' (the first is search bar 'my_files' which redirects to login.html).
+            # We MUST submit the form that owns #downloadbtn (btn.form.submit()), which contains op="download2".
+            # We also ensure adblock_detected is forced to '0' so UsersDrive doesn't block the download link.
             logger.info("[UsersDrive] Submitting 'Create Download Link' form...")
             try:
                 await page.evaluate("""() => {
                     const btn = document.getElementById('downloadbtn');
-                    if (btn) {
-                        btn.click();
-                    } else if (document.forms['F1']) {
-                        document.forms['F1'].submit();
+                    const form = btn ? btn.form : (document.querySelector('form:has(#downloadbtn)') || document.querySelector('input[value="download2"]')?.form);
+                    if (form) {
+                        const ab = form.querySelector('#adblock_detected') || document.getElementById('adblock_detected');
+                        if (ab) ab.value = '0';
+                        form.submit();
                     }
                 }""")
             except Exception as click_err:
                 logger.debug(f"[UsersDrive] JS submit error: {click_err}")
                 try:
-                    btn = await page.query_selector("#downloadbtn, button:has-text('Create Download Link')")
+                    btn = await page.query_selector("#downloadbtn")
                     if btn:
                         await btn.click()
                 except Exception:
@@ -484,9 +510,15 @@ class LinkResolver:
             # Step 3: Wait for the download page to load with the 'Click To Download' link
             logger.info("[UsersDrive] Waiting for download link to appear...")
             try:
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(3000)
+            logger.debug(f"[UsersDrive] Page URL after submit: {page.url}")
+            try:
                 await page.wait_for_selector(
-                    "a.btn-download, a[href*='userdrive.org'], a:has-text('Click To Download'), a:has-text('Download')",
-                    timeout=20000,
+                    "a.btn-download, a[href*='userdrive.org'], a:has-text('Click To Download')",
+                    timeout=10000,
                 )
             except Exception:
                 pass
@@ -502,39 +534,39 @@ class LinkResolver:
                         pass
                 popup_pages.clear()
 
-                # 1. Check network captured URLs
-                if captured_urls:
-                    final_url = normalize_download_url(captured_urls[0])
-                    logger.info(f"[UsersDrive] Resolved direct URL from network: {final_url}")
-                    return final_url
-
-                # 2. Check anchor links on page
+                # 1. Specifically inspect .btn-download element or direct userdrive.org link
                 try:
-                    links = await page.query_selector_all("a[href]")
-                    for link in links:
-                        href = await link.get_attribute("href") or ""
-                        if is_direct_url(href) or is_mega_url(href):
-                            final_url = normalize_download_url(href)
-                            logger.info(f"[UsersDrive] Resolved direct URL from link: {final_url}")
-                            return final_url
-                except Exception:
-                    pass
-
-                # 3. Specifically inspect .btn-download element
-                try:
-                    dl_btn = await page.query_selector("a.btn-download, a:has-text('Click To Download')")
+                    dl_btn = await page.query_selector("a.btn-download, a[href*='userdrive.org'], a:has-text('Click To Download')")
                     if dl_btn:
-                        href = await dl_btn.get_attribute("href") or ""
-                        if href and (is_direct_url(href) or is_mega_url(href) or "http" in href):
+                        href = (await dl_btn.get_attribute("href") or "").strip()
+                        if href and ("userdrive.org" in href or is_direct_url(href)):
                             final_url = normalize_download_url(href)
                             logger.info(f"[UsersDrive] Resolved URL from download button href: {final_url}")
                             return final_url
                 except Exception:
                     pass
 
+                # 2. Check network captured URLs
+                if captured_urls:
+                    final_url = normalize_download_url(captured_urls[0])
+                    logger.info(f"[UsersDrive] Resolved direct URL from network: {final_url}")
+                    return final_url
+
+                # 3. Check anchor links on page
+                try:
+                    links = await page.query_selector_all("a[href]")
+                    for link in links:
+                        href = (await link.get_attribute("href") or "").strip()
+                        if href and not href.endswith(".html") and (is_direct_url(href) or is_mega_url(href)):
+                            final_url = normalize_download_url(href)
+                            logger.info(f"[UsersDrive] Resolved direct URL from link: {final_url}")
+                            return final_url
+                except Exception:
+                    pass
+
                 # 4. Check page body text / regex
                 found = await self._scan_page_for_download_url(page)
-                if found:
+                if found and not found.endswith(".html"):
                     final_url = normalize_download_url(found)
                     logger.info(f"[UsersDrive] Resolved URL from page scan: {final_url}")
                     return final_url
@@ -565,7 +597,11 @@ class LinkResolver:
                     await pp.close()
                 except Exception:
                     pass
-            await page.close()
+            if len(self._context.pages) > 1:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
     async def _scan_page_for_mega(self, page: Page) -> Optional[str]:
         """Scan the current page content for Mega.nz URLs.
