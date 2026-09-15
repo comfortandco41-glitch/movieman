@@ -95,10 +95,32 @@ def is_mega_url(url: str) -> bool:
     return any(pattern.search(url) for pattern in _MEGA_URL_PATTERNS)
 
 
+# Known tracking, analytics, and advertising domains to reject
+_TRACKING_AND_AD_DOMAINS = {
+    "google-analytics.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "googleadservices.com",
+    "googlesyndication.com",
+    "google.com",
+    "facebook.com",
+    "scorecardresearch.com",
+    "adnxs.com",
+    "bidswitch.net",
+    "hostave3.net",
+    "onclckbn.net",
+    "rebawlcoils.shop",
+    "betweendigital.com",
+    "bkcdn.net",
+}
+
+
 def is_direct_url(url: str) -> bool:
     """Check if a URL is a direct video/file download link.
 
     Handles unencoded spaces in URLs, query parameters, and CDN domains.
+    Strictly checks the URL path to avoid false positives from tracking beacons
+    or analytics URLs that pass video titles in query parameters.
 
     Args:
         url: URL string to check.
@@ -122,27 +144,30 @@ def is_direct_url(url: str) -> bool:
         netloc = parsed.netloc.lower()
         path = unquote(parsed.path).lower()
 
-        # Known file-hosting landing pages are NOT direct links (even if path ends with .mkv/.mp4)
+        # Reject known tracking, ad, and analytics domains
+        if any(ad_domain in netloc for ad_domain in _TRACKING_AND_AD_DOMAINS):
+            return False
+        if any(keyword in netloc for keyword in ("analytics", "telemetry", "doubleclick", "googletag", "adserver")):
+            return False
+
+        # Known file-hosting landing or countdown pages are NOT direct links
         if any(h in netloc for h in ("megaup.net", "usersdrive.com")):
-            if "/d/" not in path and "download." not in netloc:
+            if "/d/" not in path:
                 return False
 
-        # Known direct CDN file hosts or download paths
+        # Known direct CDN file hosts
         if "userdrive.org" in netloc:
+            return True
+        if "megadl." in netloc:
             return True
         if ("usersdrive" in netloc or "megaup" in netloc) and "/d/" in path:
             return True
 
-        # Check path extension (e.g. /path/video.mp4 or /path/The%20Movie.mp4)
+        # Check path extension strictly on the URL path (never on query parameters)
         if any(path.endswith(ext) for ext in _VIDEO_EXTENSIONS):
             return True
 
-        # Check path before query parameters
-        clean_no_query = unquote(clean.split("?")[0]).lower()
-        if any(clean_no_query.endswith(ext) for ext in _VIDEO_EXTENSIONS):
-            return True
-
-        return any(pattern.search(clean) for pattern in _DIRECT_URL_PATTERNS)
+        return False
     except Exception:
         return False
 
@@ -319,7 +344,6 @@ class LinkResolver:
                 "args": args,
                 "viewport": {"width": 1280, "height": 800},
                 "accept_downloads": True,
-                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             }
             if channel:
                 kwargs["channel"] = channel
@@ -334,9 +358,6 @@ class LinkResolver:
                 kwargs["headless"] = False
                 ctx = await launcher.launch_persistent_context(**kwargs)
 
-            await ctx.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
             logger.info(f"[UsersDrive] Non-headless context launched (channel={channel})")
             return ctx
         except Exception as e:
@@ -926,9 +947,52 @@ class LinkResolver:
                 except Exception as nav_err:
                     logger.debug(f"[MegaUp] Stage 2 navigation exception: {nav_err}")
 
-            # ── Stage 2: Wait for #btndownload and Click ──
+            # ── Stage 2: Handle download page & extract direct CDN link ──
+            logger.info("[MegaUp] Stage 2: Waiting for download page to load...")
+
+            # Wait for Cloudflare "Just a moment..." challenge to clear and real page to load
+            for sec in range(25):
+                await page.wait_for_timeout(1000)
+                try:
+                    title = (await page.title() or "").lower()
+                except Exception:
+                    title = ""
+
+                # If Cloudflare Turnstile challenge iframe is present, click checkbox
+                for f in page.frames:
+                    if "turnstile" in f.url or "challenges.cloudflare.com" in f.url:
+                        try:
+                            box = await f.query_selector("input[type=checkbox], .ctp-checkbox-label, #challenge-stage")
+                            if box:
+                                await box.click()
+                        except Exception:
+                            pass
+
+                # Check if direct CDN URL is already in page scripts
+                try:
+                    raw_scripts = await page.evaluate("""() => {
+                        const scs = Array.from(document.querySelectorAll("script")).map(s => s.textContent || s.innerText || "").join("\\n");
+                        return scs + "\\n" + (document.documentElement ? document.documentElement.innerHTML : "");
+                    }""")
+                    has_tok = "download_token" in raw_scripts
+                    logger.info(f"[MegaUp] Stage 2 sec={sec} title='{title}' has_token={has_tok}")
+                    if has_tok:
+                        m = re.search(r'https?://[^"\'<>]+\.(?:mp4|mkv|avi|mov|wmv|webm|flv)\?download_token=[^"\'<>]+', raw_scripts)
+                        if m:
+                            direct_link = m.group(0).strip()
+                            logger.info(f"[MegaUp] Extracted direct CDN URL from script: {direct_link[:100]}...")
+                            return normalize_download_url(direct_link)
+                except Exception as ex:
+                    logger.debug(f"[MegaUp] Script check error: {ex}")
+
+                # If real download page loaded, proceed
+                if "download" in title and "just a moment" not in title:
+                    logger.info(f"[MegaUp] Download page ready at {sec}s (title='{title}')")
+                    break
+
+            # Strategy 1: Wait for #btndownload to become enabled
             logger.info("[MegaUp] Stage 2: Waiting for download button...")
-            for sec in range(20):
+            for sec in range(15):
                 if download_url_found:
                     return normalize_download_url(download_url_found[0])
                 if captured_urls:
@@ -954,12 +1018,11 @@ class LinkResolver:
                     break
                 await page.wait_for_timeout(1000)
 
-            # Click download button with multiple capture strategies
+            # Strategy 2: Click download button with multiple capture strategies
             logger.info("[MegaUp] Stage 2: Clicking download button...")
             btn_el = await page.query_selector("button#btndownload, #btndownload, a#btndownload, a.btn-download")
 
             if btn_el:
-                # Strategy 1: Check if href is already a direct link
                 try:
                     href = (await btn_el.get_attribute("href") or "").strip()
                     if href and is_direct_url(href):
@@ -968,7 +1031,6 @@ class LinkResolver:
                 except Exception:
                     pass
 
-                # Strategy 2: Expect download event on click
                 try:
                     async with page.expect_download(timeout=8000) as dl_info:
                         await btn_el.click()
@@ -979,19 +1041,16 @@ class LinkResolver:
                 except Exception:
                     pass
 
-                # Strategy 3: Check expect_popup
-                if not download_url_found and not captured_urls:
-                    try:
-                        async with page.expect_popup(timeout=5000) as popup_info:
-                            await btn_el.click()
-                        popup = await popup_info.value
-                        if popup and popup.url and is_direct_url(popup.url):
-                            p_url = popup.url
-                            await popup.close()
-                            logger.info(f"[MegaUp] Direct URL from popup: {p_url}")
-                            return normalize_download_url(p_url)
-                    except Exception:
-                        pass
+                # If first click was intercepted by an ad popup, try clicking again
+                try:
+                    async with page.expect_download(timeout=5000) as dl_info:
+                        await btn_el.click()
+                    dl = await dl_info.value
+                    if dl and dl.url:
+                        logger.info(f"[MegaUp] Direct download URL from second click: {dl.url}")
+                        return normalize_download_url(dl.url)
+                except Exception:
+                    pass
 
             # Wait a few seconds for network requests or download listener
             await page.wait_for_timeout(3000)
@@ -1003,7 +1062,7 @@ class LinkResolver:
                 if is_direct_url(u):
                     return normalize_download_url(u)
 
-            # Strategy 4: DOM link scan
+            # Strategy 3: DOM link scan
             try:
                 for a_el in await page.query_selector_all("a[href]"):
                     h = (await a_el.get_attribute("href") or "").strip()
@@ -1012,7 +1071,7 @@ class LinkResolver:
             except Exception:
                 pass
 
-            # Strategy 5: Full page text scan
+            # Strategy 4: Full page text scan
             found = await self._scan_page_for_download_url(page)
             if found and is_direct_url(found):
                 return normalize_download_url(found)

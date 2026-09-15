@@ -176,6 +176,13 @@ class HttpDownloader:
                             if progress_callback:
                                 progress_callback(downloaded, total_bytes)
 
+                    # Reject 0-byte downloads immediately
+                    if downloaded == 0 or (target_path.exists() and target_path.stat().st_size == 0):
+                        raise HttpDownloadError(
+                            f"Downloaded file {target_path.name} is 0 bytes. "
+                            f"The URL {url} did not provide any media data."
+                        )
+
                     logger.info(
                         f"HTTP download complete: {target_path.name} ({downloaded} bytes)"
                     )
