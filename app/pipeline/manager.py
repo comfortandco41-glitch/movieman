@@ -327,8 +327,12 @@ class PipelineManager:
 
                 # Only resolve if we don't already have a direct download_url and mega_url is not direct
                 if not ctx.download_url and (not ctx.mega_url or not is_mega_url(ctx.mega_url)):
+                    if self._resolver is None:
+                        from app.resolver.link_resolver import LinkResolver
+                        self._resolver = LinkResolver(scraper=self._scraper)
+                    res_inst = self._resolver
                     stages.append(
-                        ("resolve", lambda: stage_resolve(ctx, self._resolver, progress))
+                        ("resolve", lambda: stage_resolve(ctx, res_inst, progress))
                     )
 
 

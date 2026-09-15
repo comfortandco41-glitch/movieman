@@ -218,64 +218,121 @@ class LinkResolver:
     browser, Turnstile blocks the form submission entirely.
     """
 
-    def __init__(self, browser_context: BrowserContext, playwright: Optional[Playwright] = None) -> None:
+    def __init__(
+        self,
+        browser_context: Optional[BrowserContext] = None,
+        playwright: Optional[Playwright] = None,
+        scraper: Optional[Any] = None,
+    ) -> None:
         self._context = browser_context
-        self._playwright = playwright  # Used to spawn non-headless context for UsersDrive
+        self._playwright = playwright  # Used to spawn context for UsersDrive
+        self._scraper = scraper
+
+    def set_browser_context(
+        self,
+        browser_context: BrowserContext,
+        playwright: Optional[Playwright] = None,
+    ) -> None:
+        """Update the active shared browser context."""
+        self._context = browser_context
+        if playwright is not None:
+            self._playwright = playwright
+
+    async def _get_context(self) -> Optional[BrowserContext]:
+        """Get or lazily initialize the shared browser context."""
+        if self._context is not None:
+            return self._context
+        if self._scraper is not None and hasattr(self._scraper, "_ensure_browser"):
+            try:
+                self._context = await self._scraper._ensure_browser()
+                if hasattr(self._scraper, "_playwright") and self._scraper._playwright:
+                    self._playwright = self._scraper._playwright
+                return self._context
+            except Exception as e:
+                logger.warning(f"Failed to obtain browser context from scraper: {e}")
+        return None
 
     async def _open_nonheadless_context(self) -> Optional[BrowserContext]:
-        """Open a temporary non-headless Chromium context for CAPTCHA-protected pages.
+        """Open a dedicated browser context for CAPTCHA-protected pages (UsersDrive).
 
-        UsersDrive uses Cloudflare Turnstile which is blocked in headless mode.
-        This spawns a separate visible Chrome window just for resolution.
-        Returns None if unable to launch.
+        Uses a visible window on desktop OS (Windows/macOS/Linux with DISPLAY)
+        so Cloudflare Turnstile auto-solves, or stealth headless with --headless=new
+        on headless Linux servers (e.g. Render/Docker).
         """
         try:
             pw = self._playwright
             if pw is None:
-                # Import here to avoid circular at module load
-                from playwright.async_api import async_playwright as _apw
-                pw = await _apw().start()
+                if self._scraper and hasattr(self._scraper, "_playwright") and self._scraper._playwright:
+                    pw = self._scraper._playwright
+                else:
+                    from playwright.async_api import async_playwright as _apw
+                    pw = await _apw().start()
+                    self._playwright = pw
 
             launcher = pw.chromium
 
-            # Detect real Chrome installation
+            # Detect real Chrome installation (Windows + Linux)
             channel = None
             chrome_paths = [
                 r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
             ]
             for cp in chrome_paths:
                 if os.path.exists(cp):
-                    channel = "chrome"
+                    channel = "chrome" if ("chrome" in cp.lower() or "Chrome" in cp) else "chromium"
                     break
 
-            # Use a separate profile dir for the non-headless context
+            # Use non-headless only if display is available (Windows, macOS, or Linux with DISPLAY)
+            has_display = bool(os.environ.get("DISPLAY"))
+            can_run_headed = sys.platform in ("win32", "darwin") or has_display
+            use_headless = not can_run_headed
+
             profile_dir = os.path.join(os.getcwd(), ".browser_profile_resolver")
             os.makedirs(profile_dir, exist_ok=True)
 
+            args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--window-size=1280,800",
+            ]
+            if use_headless:
+                args.append("--headless=new")
+
             kwargs = {
                 "user_data_dir": profile_dir,
-                "headless": False,          # NON-HEADLESS so Turnstile works
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--window-size=1280,800",
-                ],
+                "headless": use_headless,
+                "args": args,
                 "viewport": {"width": 1280, "height": 800},
                 "accept_downloads": True,
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             }
             if channel:
                 kwargs["channel"] = channel
 
-            ctx = await launcher.launch_persistent_context(**kwargs)
+            try:
+                ctx = await launcher.launch_persistent_context(**kwargs)
+            except Exception as launch_err:
+                logger.warning(
+                    f"[UsersDrive] Launch with channel={channel} failed: {launch_err}. Retrying standard..."
+                )
+                kwargs.pop("channel", None)
+                kwargs["headless"] = True
+                ctx = await launcher.launch_persistent_context(**kwargs)
+
             await ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-            logger.info(f"[UsersDrive] Non-headless context launched (channel={channel})")
+            logger.info(f"[UsersDrive] Context launched (channel={channel}, headless={use_headless})")
             return ctx
         except Exception as e:
-            logger.error(f"[UsersDrive] Failed to launch non-headless context: {e}")
+            logger.error(f"[UsersDrive] Failed to launch context: {e}")
             return None
 
     async def resolve(
@@ -338,7 +395,11 @@ class LinkResolver:
         if "usersdrive.com" in domain:
             return await self._resolve_usersdrive(url, timeout)
 
-        page = await self._context.new_page()
+        ctx = await self._get_context()
+        if ctx is None:
+            logger.error("No browser context available to resolve link")
+            return None
+        page = await ctx.new_page()
 
         try:
             # Monitor network requests for Mega OR direct video URLs
@@ -446,11 +507,17 @@ class LinkResolver:
         8. Strategies C-F: network/listener/scan fallbacks
         """
         nh_context = None
+        owns_context = False
         try:
-            # Open a NON-HEADLESS context - this is what makes Turnstile work
             nh_context = await self._open_nonheadless_context()
+            if nh_context is not None:
+                owns_context = True
+            else:
+                logger.warning("[UsersDrive] Dedicated context unavailable, falling back to shared context")
+                nh_context = await self._get_context()
+
             if nh_context is None:
-                logger.error("[UsersDrive] Could not open non-headless context")
+                logger.error("[UsersDrive] No browser context available for UsersDrive")
                 return None
 
             page = await nh_context.new_page()
@@ -724,10 +791,10 @@ class LinkResolver:
             return None
 
         finally:
-            if nh_context is not None:
+            if owns_context and nh_context is not None:
                 try:
                     await nh_context.close()
-                    logger.debug("[UsersDrive] Non-headless context closed")
+                    logger.debug("[UsersDrive] Context closed")
                 except Exception:
                     pass
 

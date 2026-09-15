@@ -125,7 +125,11 @@ async def stage_resolve(
     if not ctx.mega_url and not ctx.candidate_urls:
         raise PipelineError("Resolve", "No download URL to resolve")
 
-    from app.resolver.link_resolver import is_mega_url, is_direct_url, DeadLinkError
+    from app.resolver.link_resolver import is_mega_url, is_direct_url, DeadLinkError, LinkResolver
+
+    if resolver is None:
+        logger.warning(f"job={ctx.job_id} resolver was None; instantiating fallback LinkResolver")
+        resolver = LinkResolver()
 
     candidates = ctx.candidate_urls or [ctx.mega_url]
     resolved = None

@@ -86,15 +86,14 @@ def main() -> None:
         )
         logger.info("Telethon 2GB MTProto Uploader enabled")
 
-    # Link resolver needs a browser context from the scraper
-    # We'll initialize it lazily after the scraper's browser is ready
-    resolver = None
+    # Link resolver initialized immediately with reference to scraper
+    resolver = LinkResolver(scraper=mmsub_scraper)
 
     # Pipeline manager
     pipeline = PipelineManager(
         config=config,
         scraper=scraper,
-        resolver=resolver,  # Will be set after browser init
+        resolver=resolver,
         mega_downloader=mega_downloader,
         telethon_uploader=telethon_uploader,
         http_downloader=http_downloader,
@@ -104,18 +103,16 @@ def main() -> None:
     # This is done via a startup hook
     async def on_startup(app):
         """Initialize browser-dependent components on bot startup."""
-        nonlocal resolver
         try:
             browser_context = await mmsub_scraper._ensure_browser()
-            resolver = LinkResolver(browser_context, playwright=mmsub_scraper._playwright)
-            pipeline._resolver = resolver
-            logger.info("Link resolver initialized with browser context")
+            resolver.set_browser_context(browser_context, playwright=mmsub_scraper._playwright)
+            logger.info("Link resolver updated with active browser context")
             bot_user = await app.bot.get_me()
             logger.info(f"Bot @{bot_user.username} is fully online and ready!")
             logger.info("Open Telegram and send /start to your bot to begin.")
         except Exception as e:
-            logger.error(f"Failed to initialize browser: {e}")
-            logger.warning("Link resolution will not work until browser is available")
+            logger.error(f"Failed to pre-initialize browser: {e}")
+            logger.warning("Link resolver will launch browser on demand when needed")
 
         # Initialize movie store database
         try:

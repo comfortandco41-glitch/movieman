@@ -80,6 +80,8 @@ class MMSubChannelScraper:
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
                     ],
                     "viewport": {"width": 1280, "height": 800},
                     "accept_downloads": True,
