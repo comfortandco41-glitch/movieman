@@ -97,7 +97,17 @@ class MMSubChannelScraper:
                 except Exception as e:
                     logger.warning(f"Failed to launch with channel {channel}: {e}. Retrying with default chromium...")
                     launch_kwargs.pop("channel", None)
-                    self._context = await launcher.launch_persistent_context(**launch_kwargs)
+                    try:
+                        self._context = await launcher.launch_persistent_context(**launch_kwargs)
+                    except Exception as e2:
+                        err_str = str(e2)
+                        if "Executable doesn't exist" in err_str or "playwright install" in err_str:
+                            logger.info("Playwright browser binary missing; automatically downloading chromium at runtime...")
+                            import subprocess, sys
+                            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+                            self._context = await launcher.launch_persistent_context(**launch_kwargs)
+                        else:
+                            raise e2
 
                 await self._context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 logger.info(f"Browser launched: {self._browser_type} (channel={channel}, headless={self._headless}) with persistent context")
