@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 
 from playwright.async_api import BrowserContext, Page
 
@@ -25,10 +25,20 @@ _MEGA_URL_PATTERNS = [
     re.compile(r"https?://mega\.nz/#![A-Za-z0-9_-]+(?:![A-Za-z0-9_-]+)?"),
 ]
 
+# Supported video extensions
+_VIDEO_EXTENSIONS = (
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv",
+    ".webm", ".m4v", ".ts", ".m2ts",
+)
+
 # Regex patterns that match direct video/file download URLs
 _DIRECT_URL_PATTERNS = [
     re.compile(
-        r"https?://[^\s'\"]+\.(?:mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|m2ts)(\?[^\s'\"]*)?$",
+        r"https?://[^\r\n'\"<>]+\.(?:mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|m2ts)(?:\?[^\r\n'\"<>]*)?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"https?://[^\r\n'\"<>]*?userdrive\.org[^\r\n'\"<>]*",
         re.IGNORECASE,
     ),
 ]
@@ -78,11 +88,15 @@ def is_mega_url(url: str) -> bool:
     Returns:
         True if the URL matches a known Mega.nz pattern.
     """
+    if not url or not isinstance(url, str):
+        return False
     return any(pattern.search(url) for pattern in _MEGA_URL_PATTERNS)
 
 
 def is_direct_url(url: str) -> bool:
     """Check if a URL is a direct video/file download link.
+
+    Handles unencoded spaces in URLs, query parameters, and CDN domains.
 
     Args:
         url: URL string to check.
@@ -90,7 +104,49 @@ def is_direct_url(url: str) -> bool:
     Returns:
         True if the URL points directly to a video file.
     """
-    return any(pattern.search(url) for pattern in _DIRECT_URL_PATTERNS)
+    if not url or not isinstance(url, str):
+        return False
+
+    clean = url.strip().strip("'\"")
+    if not clean.startswith(("http://", "https://")):
+        return False
+
+    try:
+        parsed = urlparse(clean)
+        netloc = parsed.netloc.lower()
+        path = unquote(parsed.path).lower()
+
+        # Known direct CDN file hosts or download paths
+        if "userdrive.org" in netloc:
+            return True
+        if ("usersdrive" in netloc or "megaup" in netloc) and "/d/" in path:
+            return True
+
+        # Check path extension (e.g. /path/video.mp4 or /path/The%20Movie.mp4)
+        if any(path.endswith(ext) for ext in _VIDEO_EXTENSIONS):
+            return True
+
+        # Check path before query parameters
+        clean_no_query = unquote(clean.split("?")[0]).lower()
+        if any(clean_no_query.endswith(ext) for ext in _VIDEO_EXTENSIONS):
+            return True
+
+        return any(pattern.search(clean) for pattern in _DIRECT_URL_PATTERNS)
+    except Exception:
+        return False
+
+
+def normalize_download_url(url: str) -> str:
+    """Properly quote spaces in a download URL so HTTP clients can fetch it cleanly."""
+    if not url:
+        return url
+    clean = url.strip()
+    if " " in clean:
+        parts = urlsplit(clean)
+        quoted_path = quote(parts.path, safe="/:@=+$,")
+        quoted_query = quote(parts.query, safe="=&+$,")
+        return urlunsplit((parts.scheme, parts.netloc, quoted_path, quoted_query, parts.fragment))
+    return clean
 
 
 def is_filehost_page(url: str) -> bool:
@@ -140,8 +196,9 @@ def extract_direct_url_from_text(text: str) -> Optional[str]:
     for pattern in _DIRECT_URL_PATTERNS:
         match = pattern.search(text)
         if match:
-            return match.group(0)
+            return normalize_download_url(match.group(0))
     return None
+
 
 
 class LinkResolver:
@@ -303,14 +360,11 @@ class LinkResolver:
     async def _resolve_usersdrive(self, url: str, timeout: int) -> Optional[str]:
         """Specialised resolver for UsersDrive file-hosting pages.
 
-        UsersDrive serves an HTML page at the .html URL. Clicking the
-        'Create Download Link' button triggers a POST request that returns
-        the real direct download URL. This method:
-          1. Navigates to the page in a new tab
-          2. Detects dead/removed files
-          3. Clicks the download button
-          4. Intercepts the resulting network request for the direct file URL
-          5. Handles pop-up ad tabs by closing them immediately
+        UsersDrive serves an HTML page at the .html URL.
+        1. Navigates to the page and waits for countdown timer (~5-10s) to finish.
+        2. Clicks 'Create Download Link' (#downloadbtn) to submit the form.
+        3. The second page displays the 'Click To Download' button (a.btn-download).
+        4. Extracts the direct CDN video URL from its href or captured downloads.
 
         Args:
             url: UsersDrive .html page URL.
@@ -326,10 +380,10 @@ class LinkResolver:
 
         def on_request(request):
             req_url = request.url
-            # Capture any video file URL or known CDN download URLs
             if is_direct_url(req_url) or is_mega_url(req_url):
-                captured_urls.append(req_url)
-                logger.debug(f"[UsersDrive] Captured download URL from request: {req_url}")
+                if req_url not in captured_urls:
+                    captured_urls.append(req_url)
+                    logger.debug(f"[UsersDrive] Captured download URL from request: {req_url}")
 
         def on_response(response):
             resp_url = response.url
@@ -338,13 +392,20 @@ class LinkResolver:
                     captured_urls.append(resp_url)
                     logger.debug(f"[UsersDrive] Captured download URL from response: {resp_url}")
 
+        def on_download(download):
+            d_url = download.url
+            if d_url and d_url not in captured_urls:
+                captured_urls.append(d_url)
+                logger.info(f"[UsersDrive] Captured download URL from browser download event: {d_url}")
+
         def on_popup(popup_page):
             """Close pop-up ad tabs immediately."""
             popup_pages.append(popup_page)
-            logger.debug("[UsersDrive] Pop-up tab detected, will close it")
+            logger.debug("[UsersDrive] Pop-up tab detected, queued for closure")
 
         page.on("request", on_request)
         page.on("response", on_response)
+        page.on("download", on_download)
         self._context.on("page", on_popup)
 
         try:
@@ -352,7 +413,7 @@ class LinkResolver:
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             except Exception as nav_err:
-                logger.debug(f"[UsersDrive] Navigation error (may be expected): {nav_err}")
+                logger.debug(f"[UsersDrive] Navigation warning: {nav_err}")
 
             # Check for dead/removed file
             try:
@@ -364,9 +425,6 @@ class LinkResolver:
                     "file has been deleted",
                     "file was deleted",
                     "file removed",
-                    "404",
-                    "not found",
-                    "deleted",
                 ]
                 for marker in dead_markers:
                     if marker in title or marker in body_text[:500]:
@@ -379,11 +437,7 @@ class LinkResolver:
             except Exception:
                 pass
 
-            # Already captured a URL during page load (unlikely but possible)
-            if captured_urls:
-                return captured_urls[0]
-
-            # Close any pop-ups that opened during navigation
+            # Close any ad popups that opened on initial load
             for pp in popup_pages:
                 try:
                     await pp.close()
@@ -391,43 +445,56 @@ class LinkResolver:
                     pass
             popup_pages.clear()
 
-            # Click the download button — UsersDrive typically has a form with a
-            # 'Create Download Link' or 'Download' submit button.
-            _USERSDRIVE_BUTTON_SELECTORS = [
-                "form[action*='download'] input[type='submit']",
-                "form[action*='download'] button[type='submit']",
-                "input[type='submit'][value*='Download']",
-                "input[type='submit'][value*='Create']",
-                "button:has-text('Create Download Link')",
-                "button:has-text('Download')",
-                "a:has-text('Download')",
-                "a[href*='download']",
-                "#download",
-                ".download-btn",
-                "[id*='download']",
-            ]
+            # Step 1: Wait for countdown timer (~5-10 seconds) to complete.
+            # When countdown hits 0, UsersDrive JS removes disabled attribute/class from #downloadbtn.
+            logger.info("[UsersDrive] Waiting for countdown timer to complete...")
+            try:
+                await page.wait_for_selector(
+                    "#downloadbtn:not([disabled]):not(.disabled)",
+                    timeout=15000,
+                )
+                logger.debug("[UsersDrive] Countdown finished, #downloadbtn enabled")
+            except Exception:
+                logger.debug("[UsersDrive] Selector wait timed out, waiting fixed delay...")
+                await page.wait_for_timeout(10000)
 
-            clicked = False
-            for selector in _USERSDRIVE_BUTTON_SELECTORS:
+            # Extra 1.5s for Cloudflare Turnstile verification callback to fire
+            await page.wait_for_timeout(1500)
+
+            # Step 2: Click the 'Create Download Link' button / submit form
+            logger.info("[UsersDrive] Submitting 'Create Download Link' form...")
+            try:
+                await page.evaluate("""() => {
+                    const btn = document.getElementById('downloadbtn');
+                    if (btn) {
+                        btn.click();
+                    } else if (document.forms['F1']) {
+                        document.forms['F1'].submit();
+                    }
+                }""")
+            except Exception as click_err:
+                logger.debug(f"[UsersDrive] JS submit error: {click_err}")
                 try:
-                    elem = await page.query_selector(selector)
-                    if elem and await elem.is_visible():
-                        logger.debug(f"[UsersDrive] Clicking button: {selector}")
-                        await elem.click()
-                        clicked = True
-                        break
+                    btn = await page.query_selector("#downloadbtn, button:has-text('Create Download Link')")
+                    if btn:
+                        await btn.click()
                 except Exception:
-                    continue
+                    pass
 
-            if not clicked:
-                logger.warning("[UsersDrive] Could not find download button — scanning page for links")
+            # Step 3: Wait for the download page to load with the 'Click To Download' link
+            logger.info("[UsersDrive] Waiting for download link to appear...")
+            try:
+                await page.wait_for_selector(
+                    "a.btn-download, a[href*='userdrive.org'], a:has-text('Click To Download'), a:has-text('Download')",
+                    timeout=20000,
+                )
+            except Exception:
+                pass
 
-            # Wait up to remaining timeout for a download URL to appear
+            # Step 4: Scan for the download link across the page and network
             max_wait = min(timeout, 30)
-            for _ in range(max_wait):
-                await page.wait_for_timeout(1000)
-
-                # Close pop-up ads
+            for _step in range(max_wait):
+                # Close any popups that opened
                 for pp in popup_pages:
                     try:
                         await pp.close()
@@ -435,26 +502,53 @@ class LinkResolver:
                         pass
                 popup_pages.clear()
 
+                # 1. Check network captured URLs
                 if captured_urls:
-                    logger.info(f"[UsersDrive] Resolved direct URL: {captured_urls[0]}")
-                    return captured_urls[0]
+                    final_url = normalize_download_url(captured_urls[0])
+                    logger.info(f"[UsersDrive] Resolved direct URL from network: {final_url}")
+                    return final_url
 
-                # Check if a new download link appeared on the page
+                # 2. Check anchor links on page
+                try:
+                    links = await page.query_selector_all("a[href]")
+                    for link in links:
+                        href = await link.get_attribute("href") or ""
+                        if is_direct_url(href) or is_mega_url(href):
+                            final_url = normalize_download_url(href)
+                            logger.info(f"[UsersDrive] Resolved direct URL from link: {final_url}")
+                            return final_url
+                except Exception:
+                    pass
+
+                # 3. Specifically inspect .btn-download element
+                try:
+                    dl_btn = await page.query_selector("a.btn-download, a:has-text('Click To Download')")
+                    if dl_btn:
+                        href = await dl_btn.get_attribute("href") or ""
+                        if href and (is_direct_url(href) or is_mega_url(href) or "http" in href):
+                            final_url = normalize_download_url(href)
+                            logger.info(f"[UsersDrive] Resolved URL from download button href: {final_url}")
+                            return final_url
+                except Exception:
+                    pass
+
+                # 4. Check page body text / regex
                 found = await self._scan_page_for_download_url(page)
                 if found:
-                    logger.info(f"[UsersDrive] Extracted URL from page: {found}")
-                    return found
+                    final_url = normalize_download_url(found)
+                    logger.info(f"[UsersDrive] Resolved URL from page scan: {final_url}")
+                    return final_url
 
-                # Try clicking again if the first click opened a pop-up
-                if not captured_urls:
-                    for selector in _USERSDRIVE_BUTTON_SELECTORS:
-                        try:
-                            elem = await page.query_selector(selector)
-                            if elem and await elem.is_visible():
-                                await elem.click()
-                                break
-                        except Exception:
-                            continue
+                # If still not found after 5s, try clicking the button in case it needs activation
+                if _step == 5:
+                    try:
+                        dl_btn = await page.query_selector("a.btn-download, a:has-text('Click To Download')")
+                        if dl_btn:
+                            await dl_btn.click()
+                    except Exception:
+                        pass
+
+                await page.wait_for_timeout(1000)
 
             logger.error(f"[UsersDrive] Failed to capture download URL for: {url}")
             return None
@@ -513,7 +607,7 @@ class LinkResolver:
                 if is_mega_url(href):
                     return href
                 if is_direct_url(href):
-                    return href
+                    return normalize_download_url(href)
 
             body_text = await page.content()
 
@@ -525,7 +619,7 @@ class LinkResolver:
             # Check for direct video URLs
             direct_url = extract_direct_url_from_text(body_text)
             if direct_url:
-                return direct_url
+                return normalize_download_url(direct_url)
 
         except Exception as e:
             logger.debug(f"Page scan error: {e}")
