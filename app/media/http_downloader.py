@@ -140,6 +140,7 @@ class HttpDownloader:
                 follow_redirects=True,
                 timeout=httpx.Timeout(self.timeout, read=120.0),
             ) as client:
+                async with client.stream("GET", url) as resp:
                     resp.raise_for_status()
 
                     # Validate content type to avoid downloading HTML cache pages as video files

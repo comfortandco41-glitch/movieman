@@ -122,6 +122,11 @@ def is_direct_url(url: str) -> bool:
         netloc = parsed.netloc.lower()
         path = unquote(parsed.path).lower()
 
+        # Known file-hosting landing pages are NOT direct links (even if path ends with .mkv/.mp4)
+        if any(h in netloc for h in ("megaup.net", "usersdrive.com")):
+            if "/d/" not in path and "download." not in netloc:
+                return False
+
         # Known direct CDN file hosts or download paths
         if "userdrive.org" in netloc:
             return True
@@ -627,22 +632,23 @@ class LinkResolver:
                 except Exception:
                     status = {"disabled": True, "cf_len": 0}
 
-                logger.debug(
-                    f"[UsersDrive] sec={sec} btn_disabled={status.get('disabled')} "
-                    f"cf_token_len={status.get('cf_len')}"
-                )
+                if sec % 3 == 0 or not status.get("disabled") or status.get("cf_len", 0) > 0:
+                    logger.info(
+                        f"[UsersDrive] Progress: sec={sec}/30 btn_disabled={status.get('disabled')} "
+                        f"cf_token_len={status.get('cf_len')}"
+                    )
 
-                # If Turnstile didn't auto-solve (rare in non-headless), click it
-                if sec >= 10 and status.get("cf_len", 0) == 0:
+                # If Turnstile hasn't auto-solved yet, click inside the challenge frame
+                if sec >= 4 and status.get("cf_len", 0) == 0:
                     try:
                         for f in page.frames:
-                            if "challenges.cloudflare.com" in f.url:
+                            if "challenges.cloudflare.com" in f.url or "turnstile" in f.url:
                                 box = await f.query_selector(
-                                    "input[type='checkbox'], .ctp-checkbox-label, body"
+                                    "input[type='checkbox'], .ctp-checkbox-label, #challenge-stage, body"
                                 )
                                 if box:
                                     await box.click()
-                                    logger.debug("[UsersDrive] Clicked Turnstile checkbox")
+                                    logger.info(f"[UsersDrive] Clicked Turnstile challenge at sec={sec}")
                                     break
                     except Exception:
                         pass

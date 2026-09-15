@@ -125,7 +125,13 @@ async def stage_resolve(
     if not ctx.mega_url and not ctx.candidate_urls:
         raise PipelineError("Resolve", "No download URL to resolve")
 
-    from app.resolver.link_resolver import is_mega_url, is_direct_url, DeadLinkError, LinkResolver
+    from app.resolver.link_resolver import (
+        is_mega_url,
+        is_direct_url,
+        is_filehost_page,
+        DeadLinkError,
+        LinkResolver,
+    )
 
     if resolver is None:
         logger.warning(f"job={ctx.job_id} resolver was None; instantiating fallback LinkResolver")
@@ -144,8 +150,8 @@ async def stage_resolve(
                 await progress.update("RESOLVING", "Direct Mega link found!", force=True)
             return
 
-        # If already a direct video URL, skip resolution
-        if is_direct_url(candidate):
+        # If already a direct video URL, skip resolution (filehost pages must NEVER be skipped)
+        if not is_filehost_page(candidate) and is_direct_url(candidate):
             logger.info(f"job={ctx.job_id} URL is already a direct download link: {candidate}")
             ctx.download_url = candidate
             ctx.mega_url = ""
