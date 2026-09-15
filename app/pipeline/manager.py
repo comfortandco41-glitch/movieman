@@ -310,13 +310,27 @@ class PipelineManager:
 
                 # Step 3: Fallback standard pipeline (Resolve -> Download -> Upload)
                 stages = []
-                from app.resolver.link_resolver import is_mega_url
-                
+                from app.resolver.link_resolver import is_mega_url, is_filehost_page
+
+                # If download_url is a known file-host page (e.g. UsersDrive HTML page),
+                # move it into the candidate list so the resolver can click the download
+                # button and extract the real direct URL via Playwright.
+                if ctx.download_url and is_filehost_page(ctx.download_url):
+                    logger.info(
+                        f"job={ctx.job_id} download_url is a filehost page, routing through resolver: {ctx.download_url}"
+                    )
+                    ctx.candidate_urls = ctx.candidate_urls or []
+                    if ctx.download_url not in ctx.candidate_urls:
+                        ctx.candidate_urls.append(ctx.download_url)
+                    ctx.mega_url = ctx.mega_url or ctx.download_url
+                    ctx.download_url = ""
+
                 # Only resolve if we don't already have a direct download_url and mega_url is not direct
                 if not ctx.download_url and (not ctx.mega_url or not is_mega_url(ctx.mega_url)):
                     stages.append(
                         ("resolve", lambda: stage_resolve(ctx, self._resolver, progress))
                     )
+
 
                 stages.append(
                     ("download", lambda: stage_download(

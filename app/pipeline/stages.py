@@ -125,7 +125,7 @@ async def stage_resolve(
     if not ctx.mega_url and not ctx.candidate_urls:
         raise PipelineError("Resolve", "No download URL to resolve")
 
-    from app.resolver.link_resolver import is_mega_url, DeadLinkError
+    from app.resolver.link_resolver import is_mega_url, is_direct_url, DeadLinkError
 
     candidates = ctx.candidate_urls or [ctx.mega_url]
     resolved = None
@@ -140,16 +140,35 @@ async def stage_resolve(
                 await progress.update("RESOLVING", "Direct Mega link found!", force=True)
             return
 
+        # If already a direct video URL, skip resolution
+        if is_direct_url(candidate):
+            logger.info(f"job={ctx.job_id} URL is already a direct download link: {candidate}")
+            ctx.download_url = candidate
+            ctx.mega_url = ""
+            if progress:
+                await progress.update("RESOLVING", "Direct download link found!", force=True)
+            return
+
         try:
             if progress and len(candidates) > 1:
                 await progress.update("RESOLVING", f"Resolving link {i + 1}/{len(candidates)}...")
 
             resolved = await resolver.resolve(candidate)
             if resolved:
-                ctx.mega_url = resolved
-                if progress:
-                    await progress.update("RESOLVING", "Mega link resolved!", force=True)
-                logger.info(f"job={ctx.job_id} resolved to: {ctx.mega_url}")
+                # Route resolved URL to the correct context field
+                if is_mega_url(resolved):
+                    ctx.mega_url = resolved
+                    ctx.download_url = ""
+                    if progress:
+                        await progress.update("RESOLVING", "Mega link resolved!", force=True)
+                    logger.info(f"job={ctx.job_id} resolved to Mega: {ctx.mega_url}")
+                else:
+                    # Direct HTTP video URL — route to HttpDownloader
+                    ctx.download_url = resolved
+                    ctx.mega_url = ""
+                    if progress:
+                        await progress.update("RESOLVING", "Direct download link resolved!", force=True)
+                    logger.info(f"job={ctx.job_id} resolved to direct URL: {ctx.download_url}")
                 return
         except DeadLinkError as dle:
             logger.warning(f"job={ctx.job_id} candidate {candidate} is dead: {dle}")
