@@ -107,7 +107,7 @@ def main() -> None:
         nonlocal resolver
         try:
             browser_context = await mmsub_scraper._ensure_browser()
-            resolver = LinkResolver(browser_context)
+            resolver = LinkResolver(browser_context, playwright=mmsub_scraper._playwright)
             pipeline._resolver = resolver
             logger.info("Link resolver initialized with browser context")
             bot_user = await app.bot.get_me()

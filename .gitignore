@@ -7,6 +7,8 @@ venv/
 
 # Workspace runtime data
 workspace/
+*.db
+*.sqlite*
 
 # Python
 __pycache__/
@@ -34,5 +36,5 @@ Thumbs.db
 # Playwright
 playwright-report/
 test-results/
-.browser_profile/
+.browser_profile*/
 *.html

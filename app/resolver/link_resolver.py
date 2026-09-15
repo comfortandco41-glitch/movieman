@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 
-from playwright.async_api import BrowserContext, Page
+from playwright.async_api import BrowserContext, Page, Playwright
 
 logger = logging.getLogger(__name__)
 
@@ -211,10 +212,71 @@ class LinkResolver:
 
     Uses a Playwright browser context (shared with the scraper)
     to follow JavaScript-based redirects and ad pages.
+
+    For UsersDrive specifically, a separate NON-HEADLESS browser context
+    is spawned so Cloudflare Turnstile can auto-solve. Without a visible
+    browser, Turnstile blocks the form submission entirely.
     """
 
-    def __init__(self, browser_context: BrowserContext) -> None:
+    def __init__(self, browser_context: BrowserContext, playwright: Optional[Playwright] = None) -> None:
         self._context = browser_context
+        self._playwright = playwright  # Used to spawn non-headless context for UsersDrive
+
+    async def _open_nonheadless_context(self) -> Optional[BrowserContext]:
+        """Open a temporary non-headless Chromium context for CAPTCHA-protected pages.
+
+        UsersDrive uses Cloudflare Turnstile which is blocked in headless mode.
+        This spawns a separate visible Chrome window just for resolution.
+        Returns None if unable to launch.
+        """
+        try:
+            pw = self._playwright
+            if pw is None:
+                # Import here to avoid circular at module load
+                from playwright.async_api import async_playwright as _apw
+                pw = await _apw().start()
+
+            launcher = pw.chromium
+
+            # Detect real Chrome installation
+            channel = None
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]
+            for cp in chrome_paths:
+                if os.path.exists(cp):
+                    channel = "chrome"
+                    break
+
+            # Use a separate profile dir for the non-headless context
+            profile_dir = os.path.join(os.getcwd(), ".browser_profile_resolver")
+            os.makedirs(profile_dir, exist_ok=True)
+
+            kwargs = {
+                "user_data_dir": profile_dir,
+                "headless": False,          # NON-HEADLESS so Turnstile works
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--window-size=1280,800",
+                ],
+                "viewport": {"width": 1280, "height": 800},
+                "accept_downloads": True,
+            }
+            if channel:
+                kwargs["channel"] = channel
+
+            ctx = await launcher.launch_persistent_context(**kwargs)
+            await ctx.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            logger.info(f"[UsersDrive] Non-headless context launched (channel={channel})")
+            return ctx
+        except Exception as e:
+            logger.error(f"[UsersDrive] Failed to launch non-headless context: {e}")
+            return None
 
     async def resolve(
         self,
@@ -365,105 +427,108 @@ class LinkResolver:
     async def _resolve_usersdrive(self, url: str, timeout: int) -> Optional[str]:
         """Specialised resolver for UsersDrive file-hosting pages.
 
+        ROOT CAUSE: UsersDrive uses Cloudflare Turnstile which ONLY auto-solves
+        in a visible (non-headless) browser. In headless mode the token is never
+        populated and the server rejects the form submission.
+
+        Fix: Open a dedicated NON-HEADLESS Chrome context just for this resolution,
+        completely separate from the scraper's headless context. After getting the
+        download URL we close the context.
+
         Flow:
-        1. Open a FRESH dedicated page (never reuse scraper pages).
-        2. Navigate to UsersDrive URL.
-        3. Wait for countdown (~10s) and Cloudflare Turnstile token.
-        4. Submit the download form (op=download2).
-        5. On the intermediate page, find the 'Click To Download' button.
-        6. Multiple strategies extract the final CDN URL:
-           A. Read .btn-download href directly from DOM (fastest, no click needed).
-           B. Click button and capture the new popup tab URL via expect_popup.
-           C. URL captured by the on_popup listener (async, attached to page).
-           D. Network-intercepted request/response URLs.
-           E. Scan all page anchor links.
-           F. Full page content regex scan.
+        1. Open non-headless Chrome context
+        2. Navigate to UsersDrive URL
+        3. Wait up to 30s for countdown + Turnstile to auto-solve
+        4. Submit the download form (op=download2, adblock_detected=0)
+        5. Wait for the "Click To Download" page
+        6. Strategy A: read a.btn-download href from DOM (no click needed)
+        7. Strategy B: click button, capture popup tab URL
+        8. Strategies C-F: network/listener/scan fallbacks
         """
-        # Always open a fresh dedicated page — NEVER hijack the scraper's existing pages
-        page = await self._context.new_page()
-        captured_urls: list[str] = []
-        popup_urls: list[str] = []
+        nh_context = None
+        try:
+            # Open a NON-HEADLESS context - this is what makes Turnstile work
+            nh_context = await self._open_nonheadless_context()
+            if nh_context is None:
+                logger.error("[UsersDrive] Could not open non-headless context")
+                return None
 
-        def on_request(request):
-            req_url = request.url
-            if is_direct_url(req_url) or is_mega_url(req_url):
-                if req_url not in captured_urls:
-                    captured_urls.append(req_url)
-                    logger.debug(f"[UsersDrive] Captured from request: {req_url}")
+            page = await nh_context.new_page()
+            captured_urls: list[str] = []
+            popup_urls: list[str] = []
 
-        def on_response(response):
-            resp_url = response.url
-            if is_direct_url(resp_url) or is_mega_url(resp_url):
-                if resp_url not in captured_urls:
-                    captured_urls.append(resp_url)
-                    logger.debug(f"[UsersDrive] Captured from response: {resp_url}")
+            def on_request(request):
+                req_url = request.url
+                if is_direct_url(req_url) or is_mega_url(req_url):
+                    if req_url not in captured_urls:
+                        captured_urls.append(req_url)
+                        logger.debug(f"[UsersDrive] Captured from request: {req_url}")
 
-        def on_download(download):
-            d_url = download.url
-            if d_url and d_url not in captured_urls:
-                captured_urls.append(d_url)
-                logger.info(f"[UsersDrive] Captured from download event: {d_url}")
+            def on_response(response):
+                resp_url = response.url
+                if is_direct_url(resp_url) or is_mega_url(resp_url):
+                    if resp_url not in captured_urls:
+                        captured_urls.append(resp_url)
+                        logger.debug(f"[UsersDrive] Captured from response: {resp_url}")
 
-        async def on_popup(popup_page):
-            """Extract download URL from any new tab that opens, then close it."""
-            try:
+            def on_download(download):
+                d_url = download.url
+                if d_url and d_url not in captured_urls:
+                    captured_urls.append(d_url)
+                    logger.info(f"[UsersDrive] Captured from download event: {d_url}")
+
+            async def on_popup(popup_page):
+                """Capture URL from any popup tab then close it."""
                 try:
-                    await popup_page.wait_for_load_state("domcontentloaded", timeout=8000)
-                except Exception:
-                    pass
-                p_url = popup_page.url or ""
-                logger.debug(f"[UsersDrive] Popup tab URL: {p_url}")
-                if p_url and (is_direct_url(p_url) or is_mega_url(p_url)):
-                    popup_urls.append(p_url)
-                    logger.info(f"[UsersDrive] Captured from popup tab URL: {p_url}")
-                else:
-                    # Also scan popup page anchor links
                     try:
-                        tab_links = await popup_page.query_selector_all("a[href]")
-                        for lnk in tab_links:
-                            href = (await lnk.get_attribute("href") or "").strip()
-                            if href and (is_direct_url(href) or is_mega_url(href)):
-                                popup_urls.append(href)
-                                logger.info(f"[UsersDrive] Captured from popup tab link: {href}")
-                                break
+                        await popup_page.wait_for_load_state("domcontentloaded", timeout=8000)
                     except Exception:
                         pass
-                try:
-                    await popup_page.close()
+                    p_url = popup_page.url or ""
+                    logger.debug(f"[UsersDrive] Popup tab URL: {p_url}")
+                    if p_url and (is_direct_url(p_url) or is_mega_url(p_url)):
+                        popup_urls.append(p_url)
+                        logger.info(f"[UsersDrive] Captured from popup URL: {p_url}")
+                    else:
+                        try:
+                            for lnk in await popup_page.query_selector_all("a[href]"):
+                                href = (await lnk.get_attribute("href") or "").strip()
+                                if href and (is_direct_url(href) or is_mega_url(href)):
+                                    popup_urls.append(href)
+                                    logger.info(f"[UsersDrive] Captured from popup link: {href}")
+                                    break
+                        except Exception:
+                            pass
+                    try:
+                        await popup_page.close()
+                    except Exception:
+                        pass
                 except Exception:
-                    pass
-            except Exception:
-                try:
-                    await popup_page.close()
-                except Exception:
-                    pass
+                    try:
+                        await popup_page.close()
+                    except Exception:
+                        pass
 
-        page.on("request", on_request)
-        page.on("response", on_response)
-        page.on("download", on_download)
-        page.on("popup", on_popup)
+            page.on("request", on_request)
+            page.on("response", on_response)
+            page.on("download", on_download)
+            page.on("popup", on_popup)
 
-        try:
-            # Navigate to the UsersDrive page
+            # Step 1: Navigate
+            logger.info(f"[UsersDrive] Navigating to {url}")
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             except Exception as nav_err:
                 logger.debug(f"[UsersDrive] Navigation warning: {nav_err}")
 
-            # Check for dead/removed file
+            # Check for dead file
             try:
                 pg_title = (await page.title() or "").lower()
                 body_text = (await page.inner_text("body", timeout=2000) or "").lower()
-                dead_markers = [
-                    "file not found",
-                    "no longer available",
-                    "file has been deleted",
-                    "file was deleted",
-                    "file removed",
-                ]
-                for marker in dead_markers:
+                for marker in ["file not found", "no longer available", "file has been deleted",
+                               "file was deleted", "file removed"]:
                     if marker in pg_title or marker in body_text[:500]:
-                        logger.warning(f"[UsersDrive] Dead link detected: '{marker}'")
+                        logger.warning(f"[UsersDrive] Dead link: '{marker}'")
                         raise DeadLinkError(
                             f"File is no longer available on UsersDrive ({marker.title()})"
                         )
@@ -472,9 +537,9 @@ class LinkResolver:
             except Exception:
                 pass
 
-            # Step 1: Wait for countdown + Turnstile token (up to 25s)
-            logger.info("[UsersDrive] Waiting for countdown timer and Turnstile token...")
-            for sec in range(25):
+            # Step 2: Wait for countdown + Turnstile auto-solve (works in non-headless)
+            logger.info("[UsersDrive] Waiting for countdown + Turnstile (non-headless)...")
+            for sec in range(30):
                 await page.wait_for_timeout(1000)
                 try:
                     status = await page.evaluate("""() => {
@@ -490,18 +555,17 @@ class LinkResolver:
                     status = {"disabled": True, "cf_len": 0}
 
                 logger.debug(
-                    f"[UsersDrive] sec={sec} disabled={status.get('disabled')} "
-                    f"cf_len={status.get('cf_len')}"
+                    f"[UsersDrive] sec={sec} btn_disabled={status.get('disabled')} "
+                    f"cf_token_len={status.get('cf_len')}"
                 )
 
-                # Try clicking Turnstile checkbox if token not populated automatically
-                if sec >= 8 and status.get("cf_len", 0) == 0:
+                # If Turnstile didn't auto-solve (rare in non-headless), click it
+                if sec >= 10 and status.get("cf_len", 0) == 0:
                     try:
                         for f in page.frames:
                             if "challenges.cloudflare.com" in f.url:
                                 box = await f.query_selector(
-                                    "input[type='checkbox'], #challenge-stage, "
-                                    ".ctp-checkbox-label, body"
+                                    "input[type='checkbox'], .ctp-checkbox-label, body"
                                 )
                                 if box:
                                     await box.click()
@@ -510,21 +574,15 @@ class LinkResolver:
                     except Exception:
                         pass
 
-                if not status.get("disabled") and (status.get("cf_len", 0) > 0 or sec >= 18):
+                if not status.get("disabled") and (status.get("cf_len", 0) > 0 or sec >= 22):
                     logger.info(
-                        f"[UsersDrive] Countdown done at {sec}s "
-                        f"(token_len={status.get('cf_len')})"
+                        f"[UsersDrive] Ready at {sec}s (token_len={status.get('cf_len')})"
                     )
                     break
 
-            # Grace period
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(500)
 
-            # Step 2: Submit the download form (op=download2, NOT the search form)
-            # UsersDrive has two forms named 'F1':
-            #   - First: search bar (op="my_files") → skip this one
-            #   - Second: download form (op="download2") with #downloadbtn → submit this
-            # Force adblock_detected=0 to bypass adblock wall.
+            # Step 3: Submit the download form
             logger.info("[UsersDrive] Submitting download form...")
             try:
                 await page.evaluate("""() => {
@@ -542,7 +600,7 @@ class LinkResolver:
                     }
                 }""")
             except Exception as js_err:
-                logger.debug(f"[UsersDrive] JS form submit error: {js_err}")
+                logger.debug(f"[UsersDrive] JS submit error, clicking button: {js_err}")
                 try:
                     btn = await page.query_selector("#downloadbtn")
                     if btn:
@@ -553,56 +611,48 @@ class LinkResolver:
                 except Exception:
                     pass
 
-            # Step 3: Wait for the intermediate "Create Download Link" -> download page
-            logger.info("[UsersDrive] Waiting for intermediate download page...")
+            # Step 4: Wait for "Click To Download" page
+            logger.info("[UsersDrive] Waiting for Click To Download page...")
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=15000)
             except Exception:
                 pass
             await page.wait_for_timeout(2000)
-            logger.debug(f"[UsersDrive] Intermediate page URL: {page.url}")
+            logger.debug(f"[UsersDrive] URL after form submit: {page.url}")
 
-            # Step 4: Extract the real CDN URL using multiple strategies
-
-            # ── Strategy A: Read .btn-download href from DOM (fastest, no click needed) ──
-            # The actual CDN URL is embedded in the HTML of the "Click To Download" anchor.
+            # Strategy A: Read href directly from DOM (fastest - URL is in the HTML)
             try:
                 await page.wait_for_selector(
-                    "a.btn-download, a[href*='userdrive.org'], "
-                    "a:has-text('Click To Download')",
+                    "a.btn-download, a[href*='userdrive.org'], a:has-text('Click To Download')",
                     timeout=12000,
                 )
             except Exception:
                 pass
 
             try:
-                dl_btn = await page.query_selector(
-                    "a.btn-download, a[href*='userdrive.org'], "
-                    "a:has-text('Click To Download')"
+                dl_el = await page.query_selector(
+                    "a.btn-download, a[href*='userdrive.org'], a:has-text('Click To Download')"
                 )
-                if dl_btn:
-                    href = (await dl_btn.get_attribute("href") or "").strip()
+                if dl_el:
+                    href = (await dl_el.get_attribute("href") or "").strip()
                     if href and ("userdrive.org" in href or is_direct_url(href)):
                         final_url = normalize_download_url(href)
-                        logger.info(f"[UsersDrive] Strategy A: DOM href -> {final_url}")
+                        logger.info(f"[UsersDrive] Strategy A: {final_url}")
                         return final_url
             except Exception:
                 pass
 
-            # ── Strategy B: Click button, capture popup tab via expect_popup ──
-            # Clicking "Click To Download" opens a new window/tab with the CDN URL.
-            logger.info("[UsersDrive] Strategy B: clicking 'Click To Download' for popup...")
+            # Strategy B: Click -> popup tab
+            logger.info("[UsersDrive] Strategy B: click button for popup tab...")
             try:
-                dl_btn = await page.query_selector(
-                    "a.btn-download, a:has-text('Click To Download'), "
-                    "a[href*='userdrive.org']"
+                dl_el = await page.query_selector(
+                    "a.btn-download, a:has-text('Click To Download'), a[href*='userdrive.org']"
                 )
-                if dl_btn:
+                if dl_el:
                     try:
                         async with page.expect_popup(timeout=15000) as popup_info:
-                            await dl_btn.click()
+                            await dl_el.click()
                         new_tab = await popup_info.value
-                        logger.info(f"[UsersDrive] Strategy B: new tab URL={new_tab.url}")
                         try:
                             await new_tab.wait_for_load_state("domcontentloaded", timeout=10000)
                         except Exception:
@@ -612,17 +662,15 @@ class LinkResolver:
                         if tab_url and is_direct_url(tab_url):
                             await new_tab.close()
                             final_url = normalize_download_url(tab_url)
-                            logger.info(f"[UsersDrive] Strategy B: popup URL -> {final_url}")
+                            logger.info(f"[UsersDrive] Strategy B popup URL: {final_url}")
                             return final_url
-                        # Scan the new tab for download links
                         try:
-                            tab_links = await new_tab.query_selector_all("a[href]")
-                            for lnk in tab_links:
+                            for lnk in await new_tab.query_selector_all("a[href]"):
                                 href = (await lnk.get_attribute("href") or "").strip()
                                 if href and is_direct_url(href):
                                     await new_tab.close()
                                     final_url = normalize_download_url(href)
-                                    logger.info(f"[UsersDrive] Strategy B: popup link -> {final_url}")
+                                    logger.info(f"[UsersDrive] Strategy B popup link: {final_url}")
                                     return final_url
                         except Exception:
                             pass
@@ -632,57 +680,56 @@ class LinkResolver:
                             pass
                     except Exception as popup_err:
                         logger.debug(f"[UsersDrive] expect_popup failed: {popup_err}")
-                        # Fallback: click without popup expectation (on_popup listener will catch it)
                         try:
-                            await dl_btn.click()
+                            await dl_el.click()
                         except Exception:
                             pass
-            except Exception as click_err:
-                logger.debug(f"[UsersDrive] Strategy B error: {click_err}")
+            except Exception as e:
+                logger.debug(f"[UsersDrive] Strategy B error: {e}")
 
-            # ── Strategy C: Check popup_urls captured by async on_popup listener ──
+            # Strategy C: popup listener captured URL
             await asyncio.sleep(2)
             if popup_urls:
                 final_url = normalize_download_url(popup_urls[0])
-                logger.info(f"[UsersDrive] Strategy C: popup listener -> {final_url}")
+                logger.info(f"[UsersDrive] Strategy C: {final_url}")
                 return final_url
 
-            # ── Strategy D: Network-intercepted request/response URLs ──
+            # Strategy D: network captured URLs
             if captured_urls:
                 final_url = normalize_download_url(captured_urls[0])
-                logger.info(f"[UsersDrive] Strategy D: network capture -> {final_url}")
+                logger.info(f"[UsersDrive] Strategy D: {final_url}")
                 return final_url
 
-            # ── Strategy E: Scan all page anchor links ──
+            # Strategy E: scan page links
             try:
-                links = await page.query_selector_all("a[href]")
-                for link in links:
+                for link in await page.query_selector_all("a[href]"):
                     href = (await link.get_attribute("href") or "").strip()
                     if href and not href.endswith(".html") and (
                         is_direct_url(href) or is_mega_url(href)
                     ):
                         final_url = normalize_download_url(href)
-                        logger.info(f"[UsersDrive] Strategy E: page link -> {final_url}")
+                        logger.info(f"[UsersDrive] Strategy E: {final_url}")
                         return final_url
             except Exception:
                 pass
 
-            # ── Strategy F: Full page content regex scan ──
+            # Strategy F: full content scan
             found = await self._scan_page_for_download_url(page)
             if found and not found.endswith(".html"):
                 final_url = normalize_download_url(found)
-                logger.info(f"[UsersDrive] Strategy F: page content -> {final_url}")
+                logger.info(f"[UsersDrive] Strategy F: {final_url}")
                 return final_url
 
             logger.error(f"[UsersDrive] All strategies exhausted for: {url}")
             return None
 
         finally:
-            # Always close the dedicated resolver page to avoid page leaks
-            try:
-                await page.close()
-            except Exception:
-                pass
+            if nh_context is not None:
+                try:
+                    await nh_context.close()
+                    logger.debug("[UsersDrive] Non-headless context closed")
+                except Exception:
+                    pass
 
     async def _scan_page_for_mega(self, page: Page) -> Optional[str]:
         """Scan the current page content for Mega.nz URLs.
