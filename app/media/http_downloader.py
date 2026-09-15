@@ -140,8 +140,15 @@ class HttpDownloader:
                 follow_redirects=True,
                 timeout=httpx.Timeout(self.timeout, read=120.0),
             ) as client:
-                async with client.stream("GET", url) as resp:
                     resp.raise_for_status()
+
+                    # Validate content type to avoid downloading HTML cache pages as video files
+                    content_type = resp.headers.get("content-type", "").lower()
+                    if "text/html" in content_type:
+                        raise HttpDownloadError(
+                            f"Download URL returned HTML content ({content_type}) instead of a media stream. "
+                            "The file host may have served an ad or expired landing page."
+                        )
 
                     total_bytes = int(resp.headers.get("content-length", 0))
 

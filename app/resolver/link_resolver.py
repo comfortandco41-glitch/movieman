@@ -398,6 +398,9 @@ class LinkResolver:
         if "usersdrive.com" in domain:
             return await self._resolve_usersdrive(url, timeout)
 
+        if "megaup.net" in domain:
+            return await self._resolve_megaup(url, timeout)
+
         ctx = await self._get_context()
         if ctx is None:
             logger.error("No browser context available to resolve link")
@@ -798,6 +801,228 @@ class LinkResolver:
                 try:
                     await nh_context.close()
                     logger.debug("[UsersDrive] Context closed")
+                except Exception:
+                    pass
+
+    async def _resolve_megaup(self, url: str, timeout: int) -> Optional[str]:
+        """Specialised 2-stage resolver for MegaUp.net file-hosting pages.
+
+        Adopts the flow from MegaUp.net Auto Downloader:
+        - Stage 1: Wait for countdown timer (.download-timer), extract populated href
+          from a.btn--primary once countdown finishes, then navigate to it.
+        - Stage 2: Wait for button#btndownload to become enabled (removing .disable / .disabled),
+          click it and intercept the direct download URL via Playwright's download/popup/network events.
+        """
+        nh_context = None
+        owns_context = False
+        try:
+            nh_context = await self._open_nonheadless_context()
+            if nh_context is not None:
+                owns_context = True
+            else:
+                nh_context = await self._get_context()
+
+            if nh_context is None:
+                logger.error("[MegaUp] No browser context available")
+                return None
+
+            page = await nh_context.new_page()
+            captured_urls: list[str] = []
+            download_url_found: list[str] = []
+
+            def on_request(request):
+                req_url = request.url
+                if is_direct_url(req_url) or is_mega_url(req_url):
+                    if req_url not in captured_urls:
+                        captured_urls.append(req_url)
+                        logger.debug(f"[MegaUp] Captured from request: {req_url}")
+
+            def on_response(response):
+                resp_url = response.url
+                if is_direct_url(resp_url) or is_mega_url(resp_url):
+                    if resp_url not in captured_urls:
+                        captured_urls.append(resp_url)
+                        logger.debug(f"[MegaUp] Captured from response: {resp_url}")
+
+            def on_download(download):
+                d_url = download.url
+                if d_url:
+                    download_url_found.append(d_url)
+                    logger.info(f"[MegaUp] Captured download event URL: {d_url}")
+
+            page.on("request", on_request)
+            page.on("response", on_response)
+            page.on("download", on_download)
+
+            logger.info(f"[MegaUp] Navigating to {url}")
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+            except Exception as e:
+                logger.debug(f"[MegaUp] Navigation warning: {e}")
+
+            # Check for dead file
+            try:
+                title = (await page.title() or "").lower()
+                body_text = (await page.inner_text("body", timeout=2000) or "").lower()
+                for marker in [
+                    "error - megaup",
+                    "file not found",
+                    "no longer available",
+                    "file has been deleted",
+                    "file was deleted",
+                    "file removed",
+                    "404",
+                ]:
+                    if marker in title or marker in body_text[:400]:
+                        logger.warning(f"[MegaUp] Dead file detected: '{marker}'")
+                        raise DeadLinkError(f"File is no longer available on MegaUp ({marker.title()})")
+            except DeadLinkError:
+                raise
+            except Exception:
+                pass
+
+            # ── Stage 1: Countdown Timer & Link Generation ──
+            logger.info("[MegaUp] Stage 1: Waiting for countdown timer...")
+            stage2_url = None
+
+            for sec in range(25):
+                await page.wait_for_timeout(1000)
+                try:
+                    stage2_url = await page.evaluate("""() => {
+                        const timerDiv = document.querySelector("div[class*='download-timer']") || document.querySelector(".download-timer");
+                        const a = timerDiv 
+                            ? (timerDiv.querySelector("a.btn--primary") || timerDiv.querySelector("a.btn") || timerDiv.querySelector("a"))
+                            : document.querySelector("a.btn--primary, a[href*='download']");
+                        if (a) {
+                            const href = (a.getAttribute("href") || "").trim();
+                            if (href && href !== "#" && !href.startsWith("javascript:")) {
+                                return a.href || href;
+                            }
+                        }
+                        return null;
+                    }""")
+                except Exception:
+                    stage2_url = None
+
+                if stage2_url:
+                    logger.info(f"[MegaUp] Stage 1 ready at {sec}s -> {stage2_url}")
+                    break
+
+            if not stage2_url:
+                has_stage2_btn = await page.query_selector("button#btndownload, div#download, #btndownload")
+                if not has_stage2_btn:
+                    logger.warning("[MegaUp] Stage 1 timer link not found, attempting button scan...")
+
+            if stage2_url and stage2_url != page.url:
+                logger.info(f"[MegaUp] Transitioning to Stage 2: {stage2_url}")
+                try:
+                    await page.goto(stage2_url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                except Exception as nav_err:
+                    logger.debug(f"[MegaUp] Stage 2 navigation exception: {nav_err}")
+
+            # ── Stage 2: Wait for #btndownload and Click ──
+            logger.info("[MegaUp] Stage 2: Waiting for download button...")
+            for sec in range(20):
+                if download_url_found:
+                    return normalize_download_url(download_url_found[0])
+                if captured_urls:
+                    for cu in captured_urls:
+                        if is_direct_url(cu):
+                            return normalize_download_url(cu)
+
+                try:
+                    is_ready = await page.evaluate("""() => {
+                        const dlDiv = document.querySelector("div#download") || document;
+                        const btn = dlDiv.querySelector("button#btndownload, #btndownload, a#btndownload, a.btn-download");
+                        if (btn) {
+                            const disabled = btn.disabled || btn.classList.contains("disable") || btn.classList.contains("disabled");
+                            return !disabled;
+                        }
+                        return false;
+                    }""")
+                except Exception:
+                    is_ready = False
+
+                if is_ready:
+                    logger.info(f"[MegaUp] Stage 2 download button enabled at {sec}s")
+                    break
+                await page.wait_for_timeout(1000)
+
+            # Click download button with multiple capture strategies
+            logger.info("[MegaUp] Stage 2: Clicking download button...")
+            btn_el = await page.query_selector("button#btndownload, #btndownload, a#btndownload, a.btn-download")
+
+            if btn_el:
+                # Strategy 1: Check if href is already a direct link
+                try:
+                    href = (await btn_el.get_attribute("href") or "").strip()
+                    if href and is_direct_url(href):
+                        logger.info(f"[MegaUp] Direct link from button href: {href}")
+                        return normalize_download_url(href)
+                except Exception:
+                    pass
+
+                # Strategy 2: Expect download event on click
+                try:
+                    async with page.expect_download(timeout=8000) as dl_info:
+                        await btn_el.click()
+                    dl = await dl_info.value
+                    if dl and dl.url:
+                        logger.info(f"[MegaUp] Direct download URL from download event: {dl.url}")
+                        return normalize_download_url(dl.url)
+                except Exception:
+                    pass
+
+                # Strategy 3: Check expect_popup
+                if not download_url_found and not captured_urls:
+                    try:
+                        async with page.expect_popup(timeout=5000) as popup_info:
+                            await btn_el.click()
+                        popup = await popup_info.value
+                        if popup and popup.url and is_direct_url(popup.url):
+                            p_url = popup.url
+                            await popup.close()
+                            logger.info(f"[MegaUp] Direct URL from popup: {p_url}")
+                            return normalize_download_url(p_url)
+                    except Exception:
+                        pass
+
+            # Wait a few seconds for network requests or download listener
+            await page.wait_for_timeout(3000)
+
+            if download_url_found:
+                return normalize_download_url(download_url_found[0])
+
+            for u in captured_urls:
+                if is_direct_url(u):
+                    return normalize_download_url(u)
+
+            # Strategy 4: DOM link scan
+            try:
+                for a_el in await page.query_selector_all("a[href]"):
+                    h = (await a_el.get_attribute("href") or "").strip()
+                    if h and is_direct_url(h) and not h.endswith(".html"):
+                        return normalize_download_url(h)
+            except Exception:
+                pass
+
+            # Strategy 5: Full page text scan
+            found = await self._scan_page_for_download_url(page)
+            if found and is_direct_url(found):
+                return normalize_download_url(found)
+
+            logger.error(f"[MegaUp] Could not resolve direct download link for: {url}")
+            return None
+
+        finally:
+            if owns_context and nh_context is not None:
+                try:
+                    await nh_context.close()
+                except Exception:
+                    pass
+            elif nh_context is not None and "page" in locals() and page:
+                try:
+                    await page.close()
                 except Exception:
                     pass
 
