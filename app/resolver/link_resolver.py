@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 
@@ -286,10 +287,15 @@ class LinkResolver:
                     channel = "chrome" if ("chrome" in cp.lower() or "Chrome" in cp) else "chromium"
                     break
 
-            # Use non-headless only if display is available (Windows, macOS, or Linux with DISPLAY)
+            # Check if environment supports a GUI window (non-headless)
             has_display = bool(os.environ.get("DISPLAY"))
             can_run_headed = sys.platform in ("win32", "darwin") or has_display
-            use_headless = not can_run_headed
+
+            if not can_run_headed:
+                logger.info(
+                    "[UsersDrive] Headless Linux environment detected; reusing shared browser context to prevent memory limits"
+                )
+                return None
 
             profile_dir = os.path.join(os.getcwd(), ".browser_profile_resolver")
             os.makedirs(profile_dir, exist_ok=True)
@@ -302,12 +308,9 @@ class LinkResolver:
                 "--disable-gpu",
                 "--window-size=1280,800",
             ]
-            if use_headless:
-                args.append("--headless=new")
-
             kwargs = {
                 "user_data_dir": profile_dir,
-                "headless": use_headless,
+                "headless": False,
                 "args": args,
                 "viewport": {"width": 1280, "height": 800},
                 "accept_downloads": True,
@@ -323,13 +326,13 @@ class LinkResolver:
                     f"[UsersDrive] Launch with channel={channel} failed: {launch_err}. Retrying standard..."
                 )
                 kwargs.pop("channel", None)
-                kwargs["headless"] = True
+                kwargs["headless"] = False
                 ctx = await launcher.launch_persistent_context(**kwargs)
 
             await ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-            logger.info(f"[UsersDrive] Context launched (channel={channel}, headless={use_headless})")
+            logger.info(f"[UsersDrive] Non-headless context launched (channel={channel})")
             return ctx
         except Exception as e:
             logger.error(f"[UsersDrive] Failed to launch context: {e}")
